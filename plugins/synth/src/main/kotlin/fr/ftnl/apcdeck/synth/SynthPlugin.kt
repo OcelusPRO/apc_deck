@@ -60,6 +60,9 @@ class SynthPlugin : ApcPlugin() {
     /** Derniers morceaux en lecture vus par [onTick] (le moteur retire lui-même ceux qui se terminent). */
     private var playingSongs: Set<Int> = emptySet()
 
+    /** Dernières notes jouées par les morceaux vues par [onTick] : affichées avec celles du clavier. */
+    private var songNotes: Set<Int> = emptySet()
+
     private val songDir: Path get() = ctx.data.directory.resolve("midi")
 
     /** Notes envoyées directement au moteur (hors arpège) -> vélocité. */
@@ -110,14 +113,25 @@ class SynthPlugin : ApcPlugin() {
 
     override fun onPause() = releaseAll()
 
-    /** Un morceau qui se termine est retiré par le moteur : on met la LED et la page à jour. */
+    /** Suit le moteur : notes jouées par les morceaux (pads de notes, clavier de la page) et morceaux terminés. */
     override fun onTick(deltaMillis: Long) {
+        val notesNow = engine.songNotes
+        if (notesNow != songNotes) {
+            songNotes = notesNow
+            drawNotes()
+            emitNotes()
+        }
         val now = engine.playingSongs
         if (now == playingSongs) return
         playingSongs = now
         drawSongs()
         emitState()
     }
+
+    /** Notes à afficher : clavier (accords, latch) + morceaux MIDI. */
+    private fun shownNotes(): List<Int> = (sounding.keys + songNotes).sorted()
+
+    private fun emitNotes() = ctx.web.emit("notes", MiniJson.stringify(shownNotes()))
 
     override fun onEvent(event: ApcEvent) {
         when (event) {
@@ -151,7 +165,7 @@ class SynthPlugin : ApcPlugin() {
         }
         sounding = target
         drawNotes()
-        ctx.web.emit("notes", MiniJson.stringify(sounding.keys.toList()))
+        emitNotes()
     }
 
     /** Coupure douce : arrête les morceaux et relâche toutes les notes, qui se terminent avec leur relâchement normal. */
@@ -387,7 +401,7 @@ class SynthPlugin : ApcPlugin() {
      * au-dessus de la note qui les suit (comme les touches noires, rien au-dessus de Do et de Fa).
      */
     private fun drawNotes() {
-        val classes = sounding.keys.map { it % 12 }.toSet()
+        val classes = shownNotes().map { it % 12 }.toSet()
         NOTE_PADS.forEach { (pc, pos) ->
             val (x, y) = pos
             val lit = pc in classes
@@ -466,7 +480,7 @@ class SynthPlugin : ApcPlugin() {
         "presets" to presets.map { p ->
             mapOf("saved" to (p != null), "active" to (p != null && p == params), "waveform" to p?.waveform?.name)
         },
-        "notes" to sounding.keys.toList(),
+        "notes" to shownNotes(),
         "songs" to songs.mapIndexed { slot, s ->
             mapOf("name" to s?.name, "playing" to (slot in playingSongs),
                 "seconds" to s?.let { it.song.lengthMicros / 1_000_000.0 }, "notes" to s?.song?.noteCount)

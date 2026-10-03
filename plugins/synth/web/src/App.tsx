@@ -384,7 +384,7 @@ function ApcMap({ state, notes }: { state: SynthState; notes: number[] }) {
         <li><b>Rangée 3</b> : Do Ré Mi Fa Sol La Si ; <b>rangée 2</b> : les dièses juste au-dessus, comme les touches noires d'un piano. Les notes jouées s'allument en jaune.</li>
         <li><b>Rangée 4</b> : arpège, mode, vitesse, latch, accords, mono + glissando, écho, vibrato (vif = actif ; mode, vitesse et accords font défiler les choix).</li>
         <li><b>Rangée 5</b> : 8 presets. Appui = charger, <b>Shift</b> + appui = enregistrer le son actuel.</li>
-        <li><b>Ligne rouge</b> (boutons 1 à 8 sous les pads) : les 8 fichiers MIDI. Appui = lecture / arrêt ; LED allumée = morceau chargé, clignotante = en lecture.</li>
+        <li><b>Ligne rouge</b> (boutons 1 à 8 sous les pads) : les 8 fichiers MIDI. Appui = lecture / arrêt ; LED allumée = morceau chargé, clignotante = en lecture. Les notes du morceau s'allument en jaune comme celles du clavier.</li>
         <li><b>Sustain</b> : retour au menu (le synthé se tait) · <b>Play</b> : pause. Ces touches appartiennent au gestionnaire.</li>
       </ul>
     </div>

@@ -56,8 +56,10 @@ class MidiSongTest {
         assertEquals(setOf(2), e.playingSongs)
         render(e, 0.05)
         assertEquals(1, e.activeVoices)
+        assertEquals(setOf(60), e.songNotes) // affichée pendant qu'elle sonne
         render(e, 0.1)
         assertEquals(0, e.activeVoices) // relâchée à 100 ms
+        assertTrue(e.songNotes.isEmpty())
         render(e, 0.1)
         assertTrue(e.playingSongs.isEmpty())
     }

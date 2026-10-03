@@ -116,6 +116,12 @@ class SynthEngine(
     @Volatile
     var songLoop: Boolean = false
 
+    /** Notes que les morceaux font sonner en ce moment (affichage) ; mises à jour par le thread audio. */
+    @Volatile
+    var songNotes: Set<Int> = emptySet()
+        private set
+    private var songNotesChanged = false
+
     /** Emplacements dont le morceau est en cours de lecture. */
     val playingSongs: Set<Int> get() = songIds.keys.toSet()
 
@@ -227,6 +233,10 @@ class SynthEngine(
             renderChunk(out, pos, n)
             songs.values.forEach { it.pos += n }
             pos += n
+        }
+        if (songNotesChanged) {
+            songNotesChanged = false
+            songNotes = songs.values.flatMapTo(HashSet()) { it.held }
         }
     }
 
@@ -388,14 +398,17 @@ class SynthEngine(
                     if (velocity > 0) {
                         triggerKey(key, velocity)
                         s.held += key
+                        songNotesChanged = true
                     } else if (s.held.remove(key)) {
                         releaseKey(key)
+                        songNotesChanged = true
                     }
                     s.index++
                 }
                 if (s.index < s.keys.size || s.pos < s.length) break
                 s.held.forEach(::releaseKey) // fin du morceau : notes encore tenues relâchées
                 s.held.clear()
+                songNotesChanged = true
                 if (!songLoop) { ended = true; break }
                 s.index = 0
                 s.pos = 0
@@ -411,7 +424,10 @@ class SynthEngine(
         return n
     }
 
-    private fun stopPlayback(s: SongPlayback?) = s?.held?.forEach(::releaseKey)
+    private fun stopPlayback(s: SongPlayback?) {
+        s?.held?.forEach(::releaseKey)
+        songNotesChanged = true
+    }
 
     // --- notes ----------------------------------------------------------------------------------
 
@@ -442,6 +458,7 @@ class SynthEngine(
                     arpPool = IntArray(0)
                     arpKey = -1
                     songs.clear()
+                    songNotesChanged = true
                     echoBuffer.fill(0f)
                     echoMuted = (KILL_SECONDS * 2 * sampleRate).toInt() // les voix qui s'éteignent n'entrent pas dans l'écho
                     voices.forEach { it.released = true; if (it.stage != Stage.OFF) it.stage = Stage.KILL }

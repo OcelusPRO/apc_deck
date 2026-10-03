@@ -1,10 +1,11 @@
 {
   "id": "synth",
   "name": "Synthé",
-  "version": "1.0.0",
+  "version": "${version}",
   "main": "fr.ftnl.apcdeck.synth.SynthPlugin",
   "apiVersion": 1,
   "description": "Synthé polyphonique joué au clavier (notes MIDI), réglé aux potars",
   "author": "ftnl",
+  "repository": "https://github.com/OcelusPRO/apc_deck",
   "color": 49
 }

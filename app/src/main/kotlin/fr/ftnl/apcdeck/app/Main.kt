@@ -43,7 +43,12 @@ fun main(args: Array<String>) {
     val engine = Engine(home)
     engine.start()
     val quit = CountDownLatch(1)
-    val updater = Updater(appVersion(), engine.storage.cacheDir, engine.logs.logger("mises à jour"), onQuit = { quit.countDown() })
+    val updater = Updater(
+        appVersion(), engine.storage.cacheDir, engine.logs.logger("mises à jour"),
+        onQuit = { quit.countDown() },
+        plugins = { engine.plugins.value },
+        installJar = { engine.install(it, deleteAfter = true) },
+    )
     AppBridge(engine, updater).start()
 
     val url = engine.web.uiUrl
@@ -147,12 +152,17 @@ private fun installTrayIcon(url: String, updater: Updater, onQuit: () -> Unit): 
 }
 
 /** Résultat d'une recherche de mise à jour, en bulle de notification (un clic dessus ouvre l'interface). */
-private fun notifyUpdate(tray: TrayIcon, u: UpdateState) = when (u.status) {
-    UpdateStatus.AVAILABLE -> tray.displayMessage("Mise à jour disponible",
-        "APC Deck ${u.latest} est sorti (tu as ${u.current}). Ouvre l'interface pour l'installer.", MessageType.INFO)
-    UpdateStatus.UP_TO_DATE -> tray.displayMessage("APC Deck est à jour", "Version ${u.current}", MessageType.NONE)
-    UpdateStatus.ERROR -> tray.displayMessage("Recherche de mise à jour impossible", u.error ?: "", MessageType.WARNING)
-    else -> {}
+private fun notifyUpdate(tray: TrayIcon, u: UpdateState) {
+    val plugins = u.plugins.joinToString { "${it.name} ${it.latest}" }
+    when {
+        u.status == UpdateStatus.AVAILABLE -> tray.displayMessage("Mise à jour disponible",
+            "APC Deck ${u.latest} est sorti (tu as ${u.current})." +
+                (if (plugins.isEmpty()) "" else " Plugins : $plugins.") + " Ouvre l'interface pour l'installer.", MessageType.INFO)
+        u.plugins.isNotEmpty() -> tray.displayMessage("Mises à jour de plugins",
+            "$plugins. Ouvre l'interface pour les installer.", MessageType.INFO)
+        u.status == UpdateStatus.UP_TO_DATE -> tray.displayMessage("APC Deck est à jour", "Version ${u.current}", MessageType.NONE)
+        u.status == UpdateStatus.ERROR -> tray.displayMessage("Recherche de mise à jour impossible", u.error ?: "", MessageType.WARNING)
+    }
 }
 
 /** Petite grille 3×3 de pads colorés. */

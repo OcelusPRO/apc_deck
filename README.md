@@ -47,3 +47,10 @@ version packagée, les plugins livrés (Macros) y sont copiés dans `plugins/`.
   le numéro de version en haut de l'interface). Une version plus récente est signalée par une notification et un
   bandeau ; « Installer » télécharge l'installeur de l'OS, le lance et ferme l'application. Lancée depuis les
   sources (`gradlew :app:run`), elle ne cherche pas de mises à jour.
+- **Plugins** : un plugin peut déclarer son dépôt GitHub dans son `plugin.json`
+  (`"repository": "https://github.com/<owner>/<repo>"`). L'application compare la version de la dernière release
+  du dépôt (tag `v1.2.0` ou `1.2.0`) à celle du plugin et propose de le mettre à jour, à chaud, sans redémarrer.
+  La release doit contenir le jar sous le nom `<id>.jar`.
+- **Plugins officiels** (Macros, Synthé) : même numéro de version que l'application (`"version": "${version}"` dans
+  leur `plugin.json`, remplacé au build par `appVersion`), joints à chaque release sous le nom `<id>.jar`
+  (`./gradlew :app:packagePlugins`) et mis à jour avec elle.

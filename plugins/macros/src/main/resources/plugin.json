@@ -1,10 +1,11 @@
 {
   "id": "macros",
   "name": "Macros",
-  "version": "1.0.0",
+  "version": "${version}",
   "main": "fr.ftnl.apcdeck.macros.MacrosPlugin",
   "apiVersion": 1,
   "description": "Lance des scripts shell (programmes, sites, commandes) depuis les pads, sur 40 pages",
   "author": "ftnl",
+  "repository": "https://github.com/OcelusPRO/apc_deck",
   "color": 9
 }

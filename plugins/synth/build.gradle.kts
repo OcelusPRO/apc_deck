@@ -3,6 +3,7 @@
 plugins {
     id("buildsrc.convention.kotlin-jvm")
     id("buildsrc.convention.web-ui") // interface React + Tailwind (dossier web/ ou ui/)
+    id("buildsrc.convention.official-plugin") // version de l'application, publié dans ses releases
 }
 
 dependencies {

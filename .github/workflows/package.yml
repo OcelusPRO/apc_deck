@@ -60,9 +60,9 @@ jobs:
         run: bash ./gradlew :app:packageApp :app:packageInstaller --no-configuration-cache $VERSION_ARG
         shell: bash
 
-      - name: Jar multi-plateforme
+      - name: Jar multi-plateforme + plugins officiels (<id>.jar, pour leur mise à jour)
         if: matrix.os == 'ubuntu-latest'
-        run: bash ./gradlew :app:packageJar --no-configuration-cache $VERSION_ARG
+        run: bash ./gradlew :app:packageJar :app:packagePlugins --no-configuration-cache $VERSION_ARG
         shell: bash
 
       - uses: actions/upload-artifact@v4

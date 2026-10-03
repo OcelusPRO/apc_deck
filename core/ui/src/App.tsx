@@ -6,7 +6,7 @@ import { ConfigPanel } from "./ConfigPanel";
 import { PagerEditor } from "./PagerEditor";
 import { PluginPage } from "./PluginPage";
 import { DEVICE, Sidebar } from "./Sidebar";
-import type { Update } from "./types";
+import type { PluginUpdate, Update } from "./types";
 
 export function App() {
   const state = useAppState();
@@ -30,6 +30,7 @@ export function App() {
       <div className="flex h-full flex-col">
         <TopBar state={state} />
         {state.update && <UpdateBanner update={state.update} />}
+        {state.update && state.update.plugins.length > 0 && <PluginUpdatesBanner plugins={state.update.plugins} />}
         <div className={cx("grid min-h-0 flex-1", showConfig ? "grid-cols-[300px_minmax(0,1fr)_360px]" : "grid-cols-[300px_minmax(0,1fr)]")}>
           <Sidebar plugins={state.plugins} selected={selected} onSelect={select} />
           <main className="relative min-h-0 min-w-0 overflow-auto">
@@ -149,6 +150,38 @@ L'installeur va se lancer et l'application se fermera pour le laisser faire. Une
         <Button variant="primary" size="sm" onClick={install}>Installer</Button>
       ) : (
         update.pageUrl && <a href={update.pageUrl} target="_blank" rel="noreferrer"><Button variant="primary" size="sm">Télécharger</Button></a>
+      )}
+    </div>
+  );
+}
+
+/** Bandeau des plugins dont le dépôt publie une version plus récente (installées à chaud, sans redémarrer). */
+function PluginUpdatesBanner({ plugins }: { plugins: PluginUpdate[] }) {
+  const pending = plugins.filter((p) => !p.installing);
+  return (
+    <div className="flex flex-none flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-line bg-accent/6 px-4 py-2 text-[13px]">
+      <b>Mises à jour de plugins</b>
+      {plugins.map((p) => (
+        <span key={p.id} className="flex items-center gap-2">
+          {p.pageUrl ? (
+            <a href={p.pageUrl} target="_blank" rel="noreferrer" className="underline hover:text-text" title="Nouveautés">
+              {p.name}
+            </a>
+          ) : (
+            p.name
+          )}
+          <span className="text-muted tabular-nums">{p.current} → {p.latest}</span>
+          {p.installing ? (
+            <span className="text-muted">installation…</span>
+          ) : (
+            <Button size="sm" onClick={() => cmd("installPluginUpdate", { id: p.id })}>Mettre à jour</Button>
+          )}
+          {p.error && <span className="text-danger" title={p.error}>échec</span>}
+        </span>
+      ))}
+      <span className="flex-1" />
+      {pending.length > 1 && (
+        <Button variant="primary" size="sm" onClick={() => cmd("installPluginUpdates")}>Tout mettre à jour</Button>
       )}
     </div>
   );

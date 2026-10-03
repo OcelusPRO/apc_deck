@@ -115,6 +115,15 @@ val jpackageImage = tasks.register<Exec>("jpackageImage") {
     )
 }
 
+/** Plugins officiels pour la release : <id>.jar, le nom que cherche la mise à jour des plugins (Updater). */
+tasks.register<Copy>("packagePlugins") {
+    group = "distribution"
+    description = "Jars des plugins livrés, nommés <id>.jar, pour la release GitHub."
+    from(bundledPlugins)
+    into(distDir)
+    rename { it.removePrefix("apcdeck-") }
+}
+
 fun AbstractArchiveTask.portableArchive() {
     group = "distribution"
     description = "Archive portable pour l'OS courant (rien à installer, Java embarqué)."

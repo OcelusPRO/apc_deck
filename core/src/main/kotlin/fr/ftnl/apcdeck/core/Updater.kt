@@ -9,17 +9,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import java.net.HttpURLConnection
-import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
@@ -27,8 +19,20 @@ import kotlin.time.Duration.Companion.seconds
 
 enum class UpdateStatus { DISABLED, IDLE, CHECKING, UP_TO_DATE, AVAILABLE, DOWNLOADING, INSTALLING, ERROR }
 
+/** Plugin dont le dépôt ([fr.ftnl.apcdeck.api.PluginManifest.repository]) publie une version plus récente. */
+data class PluginUpdate(
+    val id: String,
+    val name: String,
+    val current: String,
+    val latest: String,
+    val pageUrl: String?,
+    val installing: Boolean = false,
+    val error: String? = null,
+)
+
 data class UpdateState(
     val current: String?,
+    /** État de l'application elle-même (les plugins sont dans [plugins]). */
     val status: UpdateStatus,
     val latest: String? = null,
     /** Page de la release sur GitHub. */
@@ -40,14 +44,17 @@ data class UpdateState(
     val progress: Double? = null,
     val error: String? = null,
     val checkedAt: Long? = null,
+    val plugins: List<PluginUpdate> = emptyList(),
 )
 
 /**
- * Recherche des mises à jour dans les releases GitHub du projet : au démarrage puis toutes les [interval].
- * Une version plus récente est signalée (interface + [onAvailable]) ; l'installation se fait sur demande :
- * téléchargement de l'installeur de l'OS, lancement, puis fermeture de l'application ([onQuit]) pour qu'il
- * puisse remplacer ses fichiers. Sous Windows, une fois l'installeur terminé, une fenêtre propose de relancer
- * l'application (option [AFTER_UPDATE] : l'interface ne se rouvre que si aucun onglet ne l'affiche déjà).
+ * Recherche des mises à jour dans les releases GitHub : celles de l'application ([repo]) et celles des plugins
+ * qui déclarent un dépôt dans leur plugin.json (la release doit contenir `<id>.jar`). Au démarrage puis toutes
+ * les [interval] ; les nouveautés sont signalées (interface + [onAvailable]) et s'installent sur demande :
+ *   - plugin : le jar est téléchargé, vérifié, puis installé à chaud ([installJar]) ;
+ *   - application : téléchargement de l'installeur de l'OS, lancement, puis fermeture ([onQuit]) pour qu'il
+ *     puisse remplacer ses fichiers. Sous Windows, une fois l'installeur terminé, une fenêtre propose de relancer
+ *     l'application (option [AFTER_UPDATE] : l'interface ne se rouvre que si aucun onglet ne l'affiche déjà).
  *
  * [current] null (lancement depuis les sources, sans version) : recherche désactivée.
  */
@@ -56,19 +63,25 @@ class Updater(
     private val cacheDir: Path,
     private val log: PluginLogger,
     private val onQuit: () -> Unit,
+    /** Plugins installés (seuls ceux qui ne sont pas intégrés et déclarent un dépôt sont vérifiés). */
+    private val plugins: () -> List<PluginView> = { emptyList() },
+    /** Installe (ou remplace) un plugin à partir d'un jar téléchargé ; le fichier peut être supprimé ensuite. */
+    private val installJar: (Path) -> Unit = {},
     private val repo: String = REPO,
     private val interval: Duration = 6.hours,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val busy = AtomicBoolean(false)
+    private val github = GitHub("APCDeck/${current ?: "dev"}")
     private var assetUrl: String? = null
+    private val pluginAssets = ConcurrentHashMap<String, String>()
 
     private val _state = MutableStateFlow(UpdateState(current, if (current == null) UpdateStatus.DISABLED else UpdateStatus.IDLE))
     val state: StateFlow<UpdateState> = _state
 
-    /** Appelé (thread quelconque) quand une version plus récente que la dernière signalée est trouvée. */
+    /** Appelé (thread quelconque) quand une version plus récente que celles déjà signalées est trouvée. */
     var onAvailable: (UpdateState) -> Unit = {}
-    private var announced: String? = null
+    private val announced = mutableSetOf<String>()
 
     fun start() {
         if (current == null) return log.info("version de développement : recherche de mises à jour désactivée")
@@ -86,43 +99,102 @@ class Updater(
      * l'utilisateur, qui verra le résultat ; [onAvailable] n'est alors pas appelé.
      */
     fun check(manual: Boolean = false): UpdateState {
-        if (current == null || !busy.compareAndSet(false, true)) return _state.value
+        val current = current ?: return _state.value
+        if (!busy.compareAndSet(false, true)) return _state.value
         try {
             _state.update { it.copy(status = UpdateStatus.CHECKING, error = null) }
-            val release = Json.parseToJsonElement(httpGet("https://api.github.com/repos/$repo/releases/latest")).jsonObject
-            val tag = release.string("tag_name") ?: error("release sans tag")
-            val latest = tag.removePrefix("v")
-            val asset = release["assets"]?.jsonArray?.map { it.jsonObject }?.firstOrNull { a ->
-                a.string("name")?.lowercase()?.endsWith(installerExtension()) == true
-            }
-            assetUrl = asset?.string("browser_download_url")
-            val newer = compareVersions(latest, current) > 0
-            val next = UpdateState(
-                current = current,
-                status = if (newer) UpdateStatus.AVAILABLE else UpdateStatus.UP_TO_DATE,
-                latest = latest,
-                pageUrl = release.string("html_url"),
-                assetName = asset?.string("name"),
-                notes = release.string("body"),
-                checkedAt = System.currentTimeMillis(),
-            )
+            val releases = HashMap<String, Release?>() // un dépôt partagé par plusieurs plugins n'est lu qu'une fois
+            val next = checkApp(current, releases).copy(plugins = checkPlugins(releases))
             _state.value = next
-            if (newer && announced != latest) {
-                announced = latest
-                log.info("mise à jour disponible : $current -> $latest")
+            val found = buildList {
+                if (next.status == UpdateStatus.AVAILABLE) add("app@${next.latest}")
+                next.plugins.forEach { add("${it.id}@${it.latest}") }
+            }.filter { announced.add(it) }
+            if (found.isNotEmpty()) {
+                log.info("mises à jour disponibles : ${found.joinToString()}")
                 if (!manual) onAvailable(next)
             }
-        } catch (_: NoRelease) {
-            // Pas encore de release publiée : rien de plus récent.
-            _state.value = UpdateState(current, UpdateStatus.UP_TO_DATE, checkedAt = System.currentTimeMillis())
-        } catch (t: Throwable) {
-            log.warn("recherche de mise à jour impossible : ${t.message ?: t::class.simpleName}")
-            _state.update { it.copy(status = UpdateStatus.ERROR, error = t.message ?: t::class.simpleName, checkedAt = System.currentTimeMillis()) }
         } finally {
             busy.set(false)
         }
         return _state.value
     }
+
+    private fun checkApp(current: String, releases: MutableMap<String, Release?>): UpdateState = try {
+        val release = github.latestRelease(repo).also { releases[repo] = it }
+        if (release == null) {
+            UpdateState(current, UpdateStatus.UP_TO_DATE, checkedAt = System.currentTimeMillis()) // aucune release publiée
+        } else {
+            val asset = release.asset { it.endsWith(installerExtension()) }
+            assetUrl = asset?.url
+            UpdateState(
+                current = current,
+                status = if (compareVersions(release.version, current) > 0) UpdateStatus.AVAILABLE else UpdateStatus.UP_TO_DATE,
+                latest = release.version,
+                pageUrl = release.pageUrl,
+                assetName = asset?.name,
+                notes = release.notes,
+                checkedAt = System.currentTimeMillis(),
+            )
+        }
+    } catch (t: Throwable) {
+        log.warn("recherche de mise à jour impossible : ${t.message ?: t::class.simpleName}")
+        UpdateState(current, UpdateStatus.ERROR, error = t.message ?: t::class.simpleName, checkedAt = System.currentTimeMillis())
+    }
+
+    private fun checkPlugins(releases: MutableMap<String, Release?>): List<PluginUpdate> {
+        val installing = _state.value.plugins.filter { it.installing }.associateBy { it.id }
+        return plugins().filter { !it.builtin && it.repository.isNotBlank() }.mapNotNull { p ->
+            installing[p.id]?.let { return@mapNotNull it }
+            val source = GitHub.repoOf(p.repository)
+            if (source == null) {
+                log.warn("${p.id} : dépôt non reconnu « ${p.repository} » (seul GitHub est pris en charge)")
+                return@mapNotNull null
+            }
+            val release = try {
+                releases.getOrPut(source) { github.latestRelease(source) }
+            } catch (t: Throwable) {
+                releases[source] = null
+                log.warn("${p.id} : recherche de mise à jour impossible sur $source : ${t.message ?: t::class.simpleName}")
+                null
+            } ?: return@mapNotNull null
+            if (compareVersions(release.version, p.version) <= 0) return@mapNotNull null
+            val asset = release.asset { it == "${p.id}.jar" }
+            if (asset == null) {
+                log.warn("${p.id} : la release ${release.version} de $source ne contient pas ${p.id}.jar")
+                return@mapNotNull null
+            }
+            pluginAssets[p.id] = asset.url
+            PluginUpdate(p.id, p.name, p.version, release.version, release.pageUrl)
+        }
+    }
+
+    /** Télécharge et installe la mise à jour du plugin [id] (sans fermer l'application). Ne bloque pas. */
+    fun installPlugin(id: String) {
+        val update = _state.value.plugins.firstOrNull { it.id == id } ?: error("aucune mise à jour pour $id")
+        val url = pluginAssets[id] ?: error("aucune mise à jour pour $id")
+        if (update.installing) return
+        setPlugin(id) { it.copy(installing = true, error = null) }
+        scope.launch {
+            try {
+                val jar = github.download(url, cacheDir.resolve("update").resolve("$id-${update.latest}.jar"))
+                val manifest = readManifest(jar)
+                require(manifest.id == id) { "la release contient le plugin « ${manifest.id} » au lieu de « $id »" }
+                installJar(jar)
+                log.info("${update.name} : ${update.current} -> ${manifest.version}")
+                _state.update { s -> s.copy(plugins = s.plugins.filter { it.id != id }) }
+            } catch (t: Throwable) {
+                log.error("mise à jour de $id impossible", t)
+                setPlugin(id) { it.copy(installing = false, error = t.message ?: t::class.simpleName) }
+            }
+        }
+    }
+
+    /** Toutes les mises à jour de plugins en attente. */
+    fun installPlugins() = _state.value.plugins.filter { !it.installing }.forEach { installPlugin(it.id) }
+
+    private fun setPlugin(id: String, change: (PluginUpdate) -> PluginUpdate) =
+        _state.update { s -> s.copy(plugins = s.plugins.map { if (it.id == id) change(it) else it }) }
 
     /** Télécharge l'installeur, le lance et ferme l'application. Ne bloque pas. */
     fun install() {
@@ -132,7 +204,10 @@ class Updater(
         scope.launch {
             try {
                 val name = _state.value.assetName ?: "APCDeck-update${installerExtension()}"
-                val file = download(url, cacheDir.resolve("update").also(Files::createDirectories).resolve(name))
+                _state.update { it.copy(status = UpdateStatus.DOWNLOADING, progress = 0.0, error = null) }
+                val file = github.download(url, cacheDir.resolve("update").also(Files::createDirectories).resolve(name)) { p ->
+                    _state.update { it.copy(progress = p) }
+                }
                 _state.update { it.copy(status = UpdateStatus.INSTALLING, progress = 1.0) }
                 log.info("lancement de l'installeur $name")
                 launchInstaller(file)
@@ -145,31 +220,6 @@ class Updater(
                 busy.set(false)
             }
         }
-    }
-
-    private fun download(url: String, target: Path): Path {
-        _state.update { it.copy(status = UpdateStatus.DOWNLOADING, progress = 0.0, error = null) }
-        val connection = open(url)
-        val total = connection.contentLengthLong
-        val partial = target.resolveSibling("${target.fileName}.part")
-        connection.inputStream.use { input ->
-            Files.newOutputStream(partial).use { output ->
-                val buffer = ByteArray(64 * 1024)
-                var done = 0L
-                var lastReport = 0L
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n < 0) break
-                    output.write(buffer, 0, n)
-                    done += n
-                    if (total > 0 && done - lastReport > total / 100) {
-                        lastReport = done
-                        _state.update { it.copy(progress = done.toDouble() / total) }
-                    }
-                }
-            }
-        }
-        return Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING)
     }
 
     /**
@@ -202,27 +252,6 @@ class Updater(
         Os.MACOS -> ".dmg"
         Os.LINUX -> ".deb"
     }
-
-    private fun open(url: String): HttpURLConnection =
-        (URI(url).toURL().openConnection() as HttpURLConnection).apply {
-            connectTimeout = 10_000
-            readTimeout = 30_000
-            instanceFollowRedirects = true // les fichiers des releases sont servis via une redirection
-            setRequestProperty("User-Agent", "APCDeck/${current ?: "dev"}")
-            setRequestProperty("Accept", "application/vnd.github+json")
-            if (responseCode !in 200..299) {
-                val code = responseCode
-                disconnect()
-                if (code == 404) throw NoRelease()
-                error("GitHub a répondu $code")
-            }
-        }
-
-    private fun httpGet(url: String): String = open(url).let { c -> c.inputStream.use { it.readBytes().decodeToString() } }
-
-    private class NoRelease : Exception()
-
-    private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
     enum class Os {
         WINDOWS, MACOS, LINUX;

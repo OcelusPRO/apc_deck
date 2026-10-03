@@ -67,6 +67,17 @@ export interface LogLine {
   level: "DEBUG" | "INFO" | "WARN" | "ERROR";
 }
 
+/** Plugin dont le dépôt GitHub publie une version plus récente. */
+export interface PluginUpdate {
+  id: string;
+  name: string;
+  current: string;
+  latest: string;
+  pageUrl: string | null;
+  installing: boolean;
+  error: string | null;
+}
+
 /** Recherche de mises à jour (Updater côté cœur) ; status DISABLED depuis les sources. */
 export interface Update {
   current: string | null;
@@ -78,6 +89,7 @@ export interface Update {
   progress: number | null;
   error: string | null;
   checkedAt: number | null;
+  plugins: PluginUpdate[];
 }
 
 export interface AppState {

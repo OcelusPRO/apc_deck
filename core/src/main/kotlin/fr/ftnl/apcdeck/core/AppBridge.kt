@@ -146,6 +146,8 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
             "pagerClear" -> pager?.clear(slot())
             "checkUpdate" -> updater?.check(manual = true)
             "installUpdate" -> updater?.install() ?: error("mises à jour indisponibles")
+            "installPluginUpdate" -> updater?.installPlugin(str("id")) ?: error("mises à jour indisponibles")
+            "installPluginUpdates" -> updater?.installPlugins() ?: error("mises à jour indisponibles")
             "openFolder" -> {
                 val id = json["id"]?.jsonPrimitive?.content
                 openInFileManager(if (id == null) engine.storage.home else engine.storage.pluginDataDir(id))
@@ -338,6 +340,19 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
         put("progress", u.progress)
         put("error", u.error)
         put("checkedAt", u.checkedAt)
+        putJsonArray("plugins") {
+            u.plugins.forEach { p ->
+                add(buildJsonObject {
+                    put("id", p.id)
+                    put("name", p.name)
+                    put("current", p.current)
+                    put("latest", p.latest)
+                    put("pageUrl", p.pageUrl)
+                    put("installing", p.installing)
+                    put("error", p.error)
+                })
+            }
+        }
     }
 
     private fun logJson(line: LogLine) = buildJsonObject {

@@ -1,0 +1,32 @@
+/* Thème commun (Tailwind v4). Chaque interface fait : @import "tailwindcss"; @import "@apcdeck/web/theme.css"; */
+@source "./";
+
+@theme {
+  --color-bg: #141218;
+  --color-surface: #1d1b20;
+  --color-surface-2: #2b2930;
+  --color-surface-3: #36343b;
+  --color-line: #ffffff14;
+  --color-text: #e6e0e9;
+  --color-muted: #a49eac;
+  --color-accent: #d0bcff;
+  --color-on-accent: #381e72;
+  --color-danger: #f2b8b5;
+  --color-ok: #2ee65a;
+  --color-ko: #ff453a;
+  --color-warn: #ffc857;
+  --color-pad-off: #2a2a2e;
+  --font-sans: "Segoe UI", system-ui, sans-serif;
+  --font-mono: Consolas, "Cascadia Mono", monospace;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body { @apply bg-bg text-text font-sans text-sm antialiased; margin: 0; }
+  input[type="range"] { accent-color: var(--color-accent); }
+}
+
+@keyframes pulse-led { 50% { opacity: 0.2; } }
+@keyframes blink-led { 50% { opacity: 0.1; } }
+@utility animate-pulse-led { animation: pulse-led 1.4s ease-in-out infinite; }
+@utility animate-blink-led { animation: blink-led 0.5s steps(1) infinite; }

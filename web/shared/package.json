@@ -1,0 +1,7 @@
+{
+  "name": "@apcdeck/web",
+  "private": true,
+  "type": "module",
+  "description": "Thème, composants et pont typé communs aux interfaces d'APC Deck.",
+  "exports": { ".": "./src/index.ts", "./theme.css": "./src/theme.css" }
+}

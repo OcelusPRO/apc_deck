@@ -42,7 +42,7 @@ version packagée, les plugins livrés (Macros) y sont copiés dans `plugins/`.
   et publie une release GitHub (`.github/workflows/package.yml`). La version est `appVersion` de
   `gradle.properties` dont le dernier nombre est remplacé par le numéro du build (`1.0.0` -> `1.0.42`) ; pour passer
   en 1.1, modifier `appVersion=1.1.0`.
-- **Application installée** : elle consulte les releases de [OcelusPRO/apd_deck](https://github.com/OcelusPRO/apd_deck)
+- **Application installée** : elle consulte les releases de [OcelusPRO/apc_deck](https://github.com/OcelusPRO/apc_deck)
   au démarrage puis toutes les 6 heures (ou via « Rechercher des mises à jour » dans l'icône de notification, ou
   le numéro de version en haut de l'interface). Une version plus récente est signalée par une notification et un
   bandeau ; « Installer » télécharge l'installeur de l'OS, le lance et ferme l'application. Lancée depuis les

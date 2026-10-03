@@ -224,7 +224,7 @@ class Updater(
     }
 
     companion object {
-        const val REPO = "OcelusPRO/apd_deck"
+        const val REPO = "OcelusPRO/apc_deck"
 
         /** Compare "1.10.0" et "1.9.2" nombre par nombre (un suffixe comme "-beta" est ignoré). */
         fun compareVersions(a: String, b: String): Int {

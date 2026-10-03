@@ -28,6 +28,7 @@ private data class ManifestJson(
     val author: String = "",
     val color: Int = 3,
     val repository: String = "",
+    val updateUrl: String = "",
 )
 
 private val ID_PATTERN = Regex("[a-z0-9][a-z0-9_-]{0,63}")
@@ -41,7 +42,7 @@ fun readManifest(jar: Path): PluginManifest {
     require(ID_PATTERN.matches(m.id)) { "id invalide '${m.id}' (minuscules, chiffres, - et _)" }
     require(m.apiVersion <= API_VERSION) { "${m.id} demande l'API v${m.apiVersion}, l'application fournit v$API_VERSION" }
     require(m.color in 0..127) { "couleur hors palette : ${m.color}" }
-    return PluginManifest(m.id, m.name, m.version, m.main, m.apiVersion, m.description, m.author, m.color, m.repository)
+    return PluginManifest(m.id, m.name, m.version, m.main, m.apiVersion, m.description, m.author, m.color, m.repository, m.updateUrl)
 }
 
 /**
@@ -139,8 +140,12 @@ data class PluginView(
     val instance: ApcPlugin?,
     /** Adresse de l'interface web du plugin, si son jar en contient une. */
     val webUrl: String?,
-    /** Dépôt GitHub déclaré dans plugin.json (mises à jour) ; vide = aucun. */
+    /** Dépôt git déclaré dans plugin.json (mises à jour) ; vide = aucun. */
     val repository: String = "",
+    /** Adresse directe du jar déclarée dans plugin.json (mises à jour) ; vide = aucune. */
+    val updateUrl: String = "",
+    /** Jar installé (null pour un plugin intégré). */
+    val jar: Path? = null,
 )
 
 fun stampOf(jar: Path): String? =

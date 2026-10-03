@@ -19,13 +19,18 @@ import kotlin.time.Duration.Companion.seconds
 
 enum class UpdateStatus { DISABLED, IDLE, CHECKING, UP_TO_DATE, AVAILABLE, DOWNLOADING, INSTALLING, ERROR }
 
-/** Plugin dont le dépôt ([fr.ftnl.apcdeck.api.PluginManifest.repository]) publie une version plus récente. */
+/**
+ * Plugin dont la source de mise à jour ([fr.ftnl.apcdeck.api.PluginManifest.repository] ou
+ * [fr.ftnl.apcdeck.api.PluginManifest.updateUrl]) publie une version plus récente.
+ */
 data class PluginUpdate(
     val id: String,
     val name: String,
     val current: String,
     val latest: String,
     val pageUrl: String?,
+    /** Ce qui distingue cette mise à jour (version, ou empreinte du jar pour une URL directe) : signalée une fois. */
+    val revision: String = latest,
     val installing: Boolean = false,
     val error: String? = null,
 )
@@ -48,8 +53,9 @@ data class UpdateState(
 )
 
 /**
- * Recherche des mises à jour dans les releases GitHub : celles de l'application ([repo]) et celles des plugins
- * qui déclarent un dépôt dans leur plugin.json (la release doit contenir `<id>.jar`). Au démarrage puis toutes
+ * Recherche des mises à jour : releases de l'application ([repo]) et des plugins qui déclarent une source dans leur
+ * plugin.json, soit un dépôt git (GitHub, GitLab, Gitea/Forgejo ; la release doit contenir `<id>.jar`), soit l'URL
+ * directe de leur jar (suivie par requêtes conditionnelles et comparaison d'empreinte). Au démarrage puis toutes
  * les [interval] ; les nouveautés sont signalées (interface + [onAvailable]) et s'installent sur demande :
  *   - plugin : le jar est téléchargé, vérifié, puis installé à chaud ([installJar]) ;
  *   - application : téléchargement de l'installeur de l'OS, lancement, puis fermeture ([onQuit]) pour qu'il
@@ -72,9 +78,9 @@ class Updater(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val busy = AtomicBoolean(false)
-    private val github = GitHub("APCDeck/${current ?: "dev"}")
+    private val client = ReleaseClient("APCDeck/${current ?: "dev"}")
     private var assetUrl: String? = null
-    private val pluginAssets = ConcurrentHashMap<String, String>()
+    private val pluginSources = ConcurrentHashMap<String, UpdateSource>()
 
     private val _state = MutableStateFlow(UpdateState(current, if (current == null) UpdateStatus.DISABLED else UpdateStatus.IDLE))
     val state: StateFlow<UpdateState> = _state
@@ -108,7 +114,7 @@ class Updater(
             _state.value = next
             val found = buildList {
                 if (next.status == UpdateStatus.AVAILABLE) add("app@${next.latest}")
-                next.plugins.forEach { add("${it.id}@${it.latest}") }
+                next.plugins.forEach { add("${it.id}@${it.revision}") }
             }.filter { announced.add(it) }
             if (found.isNotEmpty()) {
                 log.info("mises à jour disponibles : ${found.joinToString()}")
@@ -121,7 +127,8 @@ class Updater(
     }
 
     private fun checkApp(current: String, releases: MutableMap<String, Release?>): UpdateState = try {
-        val release = github.latestRelease(repo).also { releases[repo] = it }
+        val ref = RepoRef.parse(repo) ?: error("dépôt de l'application invalide : $repo")
+        val release = client.latestRelease(ref).also { releases[ref.key] = it }
         if (release == null) {
             UpdateState(current, UpdateStatus.UP_TO_DATE, checkedAt = System.currentTimeMillis()) // aucune release publiée
         } else {
@@ -144,42 +151,74 @@ class Updater(
 
     private fun checkPlugins(releases: MutableMap<String, Release?>): List<PluginUpdate> {
         val installing = _state.value.plugins.filter { it.installing }.associateBy { it.id }
-        return plugins().filter { !it.builtin && it.repository.isNotBlank() }.mapNotNull { p ->
+        return plugins().filter { !it.builtin && (it.updateUrl.isNotBlank() || it.repository.isNotBlank()) }.mapNotNull { p ->
             installing[p.id]?.let { return@mapNotNull it }
-            val source = GitHub.repoOf(p.repository)
-            if (source == null) {
-                log.warn("${p.id} : dépôt non reconnu « ${p.repository} » (seul GitHub est pris en charge)")
-                return@mapNotNull null
-            }
-            val release = try {
-                releases.getOrPut(source) { github.latestRelease(source) }
+            try {
+                if (p.updateUrl.isNotBlank()) checkDirect(p) else checkRepository(p, releases)
             } catch (t: Throwable) {
-                releases[source] = null
-                log.warn("${p.id} : recherche de mise à jour impossible sur $source : ${t.message ?: t::class.simpleName}")
+                log.warn("${p.id} : recherche de mise à jour impossible : ${t.message ?: t::class.simpleName}")
                 null
-            } ?: return@mapNotNull null
-            if (compareVersions(release.version, p.version) <= 0) return@mapNotNull null
-            val asset = release.asset { it == "${p.id}.jar" }
-            if (asset == null) {
-                log.warn("${p.id} : la release ${release.version} de $source ne contient pas ${p.id}.jar")
-                return@mapNotNull null
             }
-            pluginAssets[p.id] = asset.url
-            PluginUpdate(p.id, p.name, p.version, release.version, release.pageUrl)
         }
     }
 
-    /** Télécharge et installe la mise à jour du plugin [id] (sans fermer l'application). Ne bloque pas. */
+    /** Plugin publié dans les releases d'un dépôt git : version de la dernière release + fichier `<id>.jar`. */
+    private fun checkRepository(p: PluginView, releases: MutableMap<String, Release?>): PluginUpdate? {
+        val ref = RepoRef.parse(p.repository) ?: error("adresse de dépôt non reconnue « ${p.repository} »")
+        val release = releases.getOrPut(ref.key) { client.latestRelease(ref) } ?: return null
+        if (compareVersions(release.version, p.version) <= 0) return null
+        val asset = release.pluginJar(p.id) ?: error("la release ${release.version} de ${ref.host}/${ref.path} ne contient pas ${p.id}.jar")
+        pluginSources[p.id] = UpdateSource.Remote(asset.url)
+        return PluginUpdate(p.id, p.name, p.version, release.version, release.pageUrl, revision = release.version)
+    }
+
+    /** Dernier téléchargement d'une URL directe : validateurs HTTP, fichier, empreinte et version lue dans le jar. */
+    private class DirectJar(val validators: ReleaseClient.Validators, val file: Path, val sha: String, val version: String)
+    private val directJars = ConcurrentHashMap<String, DirectJar>()
+
+    /**
+     * Plugin suivi par URL directe : le jar n'est retéléchargé que s'il a changé (ETag / Last-Modified), et la
+     * mise à jour est proposée si son contenu diffère du jar installé, sauf s'il s'agit d'une version plus ancienne.
+     */
+    private fun checkDirect(p: PluginView): PluginUpdate? {
+        val url = p.updateUrl.trim()
+        val file = cacheDir.resolve("update").resolve("${p.id}-url.jar")
+        val known = directJars[url]?.takeIf { Files.exists(it.file) }
+        val jar = client.downloadIfChanged(url, file, known?.validators)?.let { validators ->
+            val manifest = readManifest(file)
+            require(manifest.id == p.id) { "$url contient le plugin « ${manifest.id} » au lieu de « ${p.id} »" }
+            DirectJar(validators, file, ReleaseClient.sha256(file), manifest.version).also { directJars[url] = it }
+        } ?: known ?: return null
+        if (p.jar != null && Files.exists(p.jar) && ReleaseClient.sha256(p.jar) == jar.sha) return null
+        val order = compareVersions(jar.version, p.version)
+        if (order < 0) return null
+        pluginSources[p.id] = UpdateSource.Local(jar.file)
+        val label = if (order == 0) "${jar.version} (nouveau fichier)" else jar.version
+        return PluginUpdate(p.id, p.name, p.version, label, pageUrl = null, revision = jar.sha)
+    }
+
+    /** D'où vient le jar d'une mise à jour de plugin. */
+    private sealed interface UpdateSource {
+        data class Remote(val url: String) : UpdateSource
+        data class Local(val file: Path) : UpdateSource
+    }
+
+    /** Télécharge (si besoin) et installe la mise à jour du plugin [id] (sans fermer l'application). Ne bloque pas. */
     fun installPlugin(id: String) {
         val update = _state.value.plugins.firstOrNull { it.id == id } ?: error("aucune mise à jour pour $id")
-        val url = pluginAssets[id] ?: error("aucune mise à jour pour $id")
+        val source = pluginSources[id] ?: error("aucune mise à jour pour $id")
         if (update.installing) return
         setPlugin(id) { it.copy(installing = true, error = null) }
         scope.launch {
             try {
-                val jar = github.download(url, cacheDir.resolve("update").resolve("$id-${update.latest}.jar"))
+                // Copie dédiée : l'installation la supprime, le fichier suivi par URL directe doit rester.
+                val target = cacheDir.resolve("update").resolve("$id-${System.nanoTime()}.jar")
+                val jar = when (source) {
+                    is UpdateSource.Remote -> client.download(source.url, target)
+                    is UpdateSource.Local -> Files.copy(source.file, target)
+                }
                 val manifest = readManifest(jar)
-                require(manifest.id == id) { "la release contient le plugin « ${manifest.id} » au lieu de « $id »" }
+                require(manifest.id == id) { "le jar téléchargé est le plugin « ${manifest.id} » au lieu de « $id »" }
                 installJar(jar)
                 log.info("${update.name} : ${update.current} -> ${manifest.version}")
                 _state.update { s -> s.copy(plugins = s.plugins.filter { it.id != id }) }
@@ -205,7 +244,7 @@ class Updater(
             try {
                 val name = _state.value.assetName ?: "APCDeck-update${installerExtension()}"
                 _state.update { it.copy(status = UpdateStatus.DOWNLOADING, progress = 0.0, error = null) }
-                val file = github.download(url, cacheDir.resolve("update").also(Files::createDirectories).resolve(name)) { p ->
+                val file = client.download(url, cacheDir.resolve("update").also(Files::createDirectories).resolve(name)) { p ->
                     _state.update { it.copy(progress = p) }
                 }
                 _state.update { it.copy(status = UpdateStatus.INSTALLING, progress = 1.0) }

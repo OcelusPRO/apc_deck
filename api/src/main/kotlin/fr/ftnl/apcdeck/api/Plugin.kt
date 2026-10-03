@@ -12,9 +12,12 @@ const val API_VERSION: Int = 1
  * { "id": "paint", "name": "Paint", "version": "1.0.0", "main": "com.exemple.PaintPlugin", "apiVersion": 1,
  *   "repository": "https://github.com/exemple/paint" }
  * ```
- * `repository` (facultatif) : dépôt GitHub dont les releases publient le plugin. L'application compare la
- * version de la dernière release (tag `v1.2.0` ou `1.2.0`) à celle du plugin et propose la mise à jour ; la
- * release doit contenir le jar sous le nom `<id>.jar` (ici `paint.jar`).
+ * Mises à jour (facultatif, l'un ou l'autre) :
+ *   - `repository` : dépôt git dont les releases publient le plugin : GitHub, GitLab (gitlab.com ou auto-hébergé),
+ *     Gitea/Forgejo (Codeberg, auto-hébergé). L'application compare la version de la dernière release (tag `v1.2.0`
+ *     ou `1.2.0`) à celle du plugin ; la release doit contenir le jar sous le nom `<id>.jar` (ici `paint.jar`).
+ *   - `updateUrl` : adresse directe du jar. L'application le retélécharge quand il change (ETag / Last-Modified)
+ *     et propose la mise à jour si son contenu diffère du jar installé (sans retour à une version plus ancienne).
  * Tous les hooks sont appelés sur le thread principal de l'application : pas de synchronisation à prévoir.
  * Cycle de vie : onLoad -> (onActivate <-> onDeactivate)* -> onUnload.
  */
@@ -95,8 +98,10 @@ data class PluginManifest(
     val author: String = "",
     /** Couleur du plugin dans le menu (index de palette). */
     val color: Int = PadColor.WHITE.index,
-    /** Dépôt GitHub (`https://github.com/<owner>/<repo>` ou `<owner>/<repo>`) : mises à jour ; vide = aucune. */
+    /** Dépôt git (GitHub, GitLab, Gitea/Forgejo) dont les releases publient le plugin ; vide = aucun. */
     val repository: String = "",
+    /** Adresse directe du jar, suivie pour les mises à jour ; vide = aucune. */
+    val updateUrl: String = "",
 )
 
 interface PluginContext {

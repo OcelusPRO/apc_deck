@@ -615,6 +615,8 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
                 // Le paramètre de version change à chaque chargement : la page est rechargée après une mise à jour.
                 webUrl = h.instance?.takeIf { h.hasWeb }?.let { web.urlFor(h.id, "${System.identityHashCode(it)}") },
                 repository = m.repository,
+                updateUrl = m.updateUrl,
+                jar = (h.source as? PluginSource.Jar)?.path,
             )
         }
     }

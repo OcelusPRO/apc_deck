@@ -94,6 +94,7 @@ const EMPTY: AppState = {
   input: null,
   learning: null,
   pager: null,
+  update: null,
   logs: [],
 };
 
@@ -116,6 +117,7 @@ export function useAppState(): AppState {
           case "input":
           case "learning":
           case "pager":
+          case "update":
             return { ...s, [event]: data };
           default:
             return s;

@@ -11,7 +11,8 @@ plugins {
 }
 
 val appName = "APCDeck"
-val appVersion = "1.0.0"
+/** Version (gradle.properties, ou -PappVersion=… : le workflow y met le numéro du build). Sert à la recherche de mises à jour. */
+val appVersion: String = providers.gradleProperty("appVersion").get()
 version = appVersion
 
 /** Plugins livrés avec l'application (copiés dans plugins/ au premier lancement). */
@@ -29,7 +30,11 @@ application {
 }
 
 // Nom fixe : c'est le --main-jar de jpackage.
-tasks.jar { archiveFileName = "app.jar" }
+tasks.jar {
+    archiveFileName = "app.jar"
+    // Lue au démarrage (Package.implementationVersion) pour comparer avec les releases GitHub.
+    manifest { attributes("Implementation-Version" to appVersion) }
+}
 
 tasks.named<JavaExec>("run") {
     // En développement, l'application travaille dans <projet>/run (plugins, config, données).
@@ -78,11 +83,15 @@ val jpackageImage = tasks.register<Exec>("jpackageImage") {
     val content = jpackageDir.get().dir("content/bundled-plugins").asFile
     inputs.dir(libDir)
     inputs.dir(content)
+    inputs.property("version", appVersion)
     outputs.dir(output)
     doFirst {
-        // Sous Windows, l'antivirus peut garder l'exe ouvert un instant : on réessaie.
-        repeat(10) {
-            if (!output.exists() || output.deleteRecursively()) return@doFirst
+        // jpackage crée l'exe en lecture seule (impossible à supprimer tel quel sous Windows) ; l'antivirus peut
+        // aussi le garder ouvert un instant : on rend tout inscriptible et on réessaie.
+        repeat(20) {
+            if (!output.exists()) return@doFirst
+            output.walkBottomUp().forEach { it.setWritable(true) }
+            if (output.deleteRecursively()) return@doFirst
             Thread.sleep(500)
         }
         error("impossible de vider $output (fichier verrouillé ?)")
@@ -130,7 +139,17 @@ tasks.register<Exec>("packageInstaller") {
     dependsOn(jpackageImage)
     val image = jpackageDir.get().dir("image").asFile.resolve(if (os == Os.MACOS) "$appName.app" else appName)
     val output = distDir.get().asFile
-    outputs.dir(output)
+    // Entrées déclarées : sans elles Gradle croit l'installeur à jour et garde un ancien .exe.
+    inputs.dir(image)
+    inputs.property("version", appVersion)
+    val installer = output.resolve(when (os) {
+        Os.WINDOWS -> "$appName-$appVersion.exe"
+        Os.MACOS -> "$appName-$appVersion.dmg"
+        Os.LINUX -> "${appName.lowercase()}_$appVersion-1_amd64.deb"
+    })
+    outputs.file(installer)
+    // jpackage n'écrase pas l'installeur précédent (créé en lecture seule) : on le retire d'abord.
+    doFirst { if (installer.exists()) installer.setWritable(true) && installer.delete() }
     executable = jpackage.get()
     args(
         "--type", os.installerType,
@@ -153,7 +172,7 @@ tasks.register<Jar>("packageJar") {
     description = "Jar unique multi-plateforme (java -jar ; Java 25 requis)."
     archiveFileName = "$appName-$appVersion-all.jar"
     destinationDirectory = distDir
-    manifest { attributes("Main-Class" to "fr.ftnl.apcdeck.app.MainKt") }
+    manifest { attributes("Main-Class" to "fr.ftnl.apcdeck.app.MainKt", "Implementation-Version" to appVersion) }
     from(sourceSets.main.map { it.output })
     val runtime = configurations.runtimeClasspath
     dependsOn(runtime)

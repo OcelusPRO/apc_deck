@@ -53,9 +53,9 @@ import kotlin.io.path.writeBytes
 
 /**
  * Relie le moteur à l'interface web : pousse l'état (événements SSE) et exécute les commandes.
- * Événements : plugins, device, settings, leds, input, learning, pager, logs (complet), log (une ligne).
+ * Événements : plugins, device, settings, leds, input, learning, pager, update, logs (complet), log (une ligne).
  */
-class AppBridge(private val engine: Engine) : AppRoutes {
+class AppBridge(private val engine: Engine, private val updater: Updater? = null) : AppRoutes {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val web get() = engine.web
 
@@ -76,6 +76,7 @@ class AppBridge(private val engine: Engine) : AppRoutes {
                 .flatMapLatest { it?.layout ?: flowOf(null) }
                 .map { "pager" to pagerJson(it) },
         )
+        updater?.let { u -> watch(u.state.map { "update" to updateJson(it) }) }
         engine.logs.listeners += { line -> web.emitApp("log", logJson(line).toString()) }
     }
 
@@ -91,6 +92,7 @@ class AppBridge(private val engine: Engine) : AppRoutes {
         "input" to inputJson(engine.input.value),
         "learning" to learningJson(engine.learningState.value),
         "pager" to pagerJson(pager?.layout?.value),
+        "update" to (updater?.state?.value?.let(::updateJson) ?: JsonNull),
         "logs" to JsonArray(engine.logs.lines.value.map(::logJson)),
     ).map { (event, json) -> event to json.toString() }
 
@@ -138,6 +140,8 @@ class AppBridge(private val engine: Engine) : AppRoutes {
             "pagerPlace" -> pager?.place(slot(), str("id"))
             "pagerMove" -> pager?.move(slot(json["from"]!!.jsonObject), slot(json["to"]!!.jsonObject))
             "pagerClear" -> pager?.clear(slot())
+            "checkUpdate" -> updater?.check(manual = true)
+            "installUpdate" -> updater?.install() ?: error("mises à jour indisponibles")
             "openFolder" -> {
                 val id = json["id"]?.jsonPrimitive?.content
                 openInFileManager(if (id == null) engine.storage.home else engine.storage.pluginDataDir(id))
@@ -319,6 +323,18 @@ class AppBridge(private val engine: Engine) : AppRoutes {
             }
         }
     } ?: JsonNull
+
+    private fun updateJson(u: UpdateState) = buildJsonObject {
+        put("current", u.current)
+        put("status", u.status.name)
+        put("latest", u.latest)
+        put("pageUrl", u.pageUrl)
+        put("assetName", u.assetName)
+        put("notes", u.notes)
+        put("progress", u.progress)
+        put("error", u.error)
+        put("checkedAt", u.checkedAt)
+    }
 
     private fun logJson(line: LogLine) = buildJsonObject {
         put("text", line.toString())

@@ -67,6 +67,19 @@ export interface LogLine {
   level: "DEBUG" | "INFO" | "WARN" | "ERROR";
 }
 
+/** Recherche de mises à jour (Updater côté cœur) ; status DISABLED depuis les sources. */
+export interface Update {
+  current: string | null;
+  status: "DISABLED" | "IDLE" | "CHECKING" | "UP_TO_DATE" | "AVAILABLE" | "DOWNLOADING" | "INSTALLING" | "ERROR";
+  latest: string | null;
+  pageUrl: string | null;
+  assetName: string | null;
+  notes: string | null;
+  progress: number | null;
+  error: string | null;
+  checkedAt: number | null;
+}
+
 export interface AppState {
   plugins: PluginView[];
   device: { connected: boolean; detail: string };
@@ -75,5 +88,6 @@ export interface AppState {
   input: Input | null;
   learning: { pluginId: string; fieldKey: string } | null;
   pager: Pager | null;
+  update: Update | null;
   logs: LogLine[];
 }

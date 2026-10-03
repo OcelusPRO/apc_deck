@@ -6,6 +6,7 @@ import { ConfigPanel } from "./ConfigPanel";
 import { PagerEditor } from "./PagerEditor";
 import { PluginPage } from "./PluginPage";
 import { DEVICE, Sidebar } from "./Sidebar";
+import type { Update } from "./types";
 
 export function App() {
   const state = useAppState();
@@ -28,6 +29,7 @@ export function App() {
     <JarDropZone>
       <div className="flex h-full flex-col">
         <TopBar state={state} />
+        {state.update && <UpdateBanner update={state.update} />}
         <div className={cx("grid min-h-0 flex-1", showConfig ? "grid-cols-[300px_minmax(0,1fr)_360px]" : "grid-cols-[300px_minmax(0,1fr)]")}>
           <Sidebar plugins={state.plugins} selected={selected} onSelect={select} />
           <main className="relative min-h-0 min-w-0 overflow-auto">
@@ -76,6 +78,7 @@ function TopBar({ state }: { state: ReturnType<typeof useAppState> }) {
           </select>
         </label>
       )}
+      {state.update && <VersionButton update={state.update} />}
       <Button onClick={() => cmd("reconnect")}>Reconnecter</Button>
       <Button onClick={() => cmd("openFolder")}>Dossier</Button>
       <Button variant="primary" onClick={() => fileInput.current?.click()}>Ajouter un plugin…</Button>
@@ -91,6 +94,63 @@ function TopBar({ state }: { state: ReturnType<typeof useAppState> }) {
         }}
       />
     </header>
+  );
+}
+
+/** Version actuelle ; un clic lance une recherche de mise à jour. */
+function VersionButton({ update }: { update: Update }) {
+  if (!update.current) return <span className="text-xs text-muted" title="Lancé depuis les sources : pas de mises à jour">dev</span>;
+  const checked = update.checkedAt ? new Date(update.checkedAt).toLocaleString() : "jamais";
+  const label =
+    update.status === "CHECKING" ? "Recherche…"
+      : update.status === "UP_TO_DATE" ? `v${update.current} · à jour`
+        : `v${update.current}`;
+  return (
+    <button
+      type="button"
+      disabled={update.status === "CHECKING" || update.status === "DOWNLOADING" || update.status === "INSTALLING"}
+      onClick={() => cmd("checkUpdate")}
+      title={`Rechercher des mises à jour (dernière recherche : ${checked})${update.error ? `
+${update.error}` : ""}`}
+      className={cx("cursor-pointer text-xs text-muted hover:text-text disabled:cursor-default", update.status === "ERROR" && "text-danger")}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Bandeau sous la barre du haut quand une version plus récente est publiée sur GitHub. */
+function UpdateBanner({ update }: { update: Update }) {
+  const busy = update.status === "DOWNLOADING" || update.status === "INSTALLING";
+  if (update.status !== "AVAILABLE" && !busy) return null;
+  const install = () => {
+    if (window.confirm(`Installer APC Deck ${update.latest} ?
+
+L'installeur va se lancer et l'application se fermera pour le laisser faire.`)) {
+      void cmd("installUpdate");
+    }
+  };
+  return (
+    <div className="flex flex-none items-center gap-3 border-b border-line bg-accent/12 px-4 py-2 text-[13px]">
+      <span className="flex-1">
+        <b>APC Deck {update.latest}</b> est disponible (tu as {update.current}).
+        {update.error && <span className="ml-2 text-danger">{update.error}</span>}
+      </span>
+      {update.pageUrl && (
+        <a href={update.pageUrl} target="_blank" rel="noreferrer" className="text-muted underline hover:text-text">
+          Nouveautés
+        </a>
+      )}
+      {update.status === "DOWNLOADING" ? (
+        <span className="tabular-nums">Téléchargement {Math.round((update.progress ?? 0) * 100)} %</span>
+      ) : update.status === "INSTALLING" ? (
+        <span>Lancement de l'installeur…</span>
+      ) : update.assetName ? (
+        <Button variant="primary" size="sm" onClick={install}>Installer</Button>
+      ) : (
+        update.pageUrl && <a href={update.pageUrl} target="_blank" rel="noreferrer"><Button variant="primary" size="sm">Télécharger</Button></a>
+      )}
+    </div>
   );
 }
 

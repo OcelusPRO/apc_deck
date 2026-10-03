@@ -2,6 +2,10 @@ package fr.ftnl.apcdeck.app
 
 import fr.ftnl.apcdeck.core.AppBridge
 import fr.ftnl.apcdeck.core.Engine
+import fr.ftnl.apcdeck.core.UpdateState
+import fr.ftnl.apcdeck.core.UpdateStatus
+import fr.ftnl.apcdeck.core.Updater
+import fr.ftnl.apcdeck.core.readManifest
 import java.awt.AWTException
 import java.awt.Color
 import java.awt.Desktop
@@ -11,9 +15,11 @@ import java.awt.PopupMenu
 import java.awt.RenderingHints
 import java.awt.SystemTray
 import java.awt.TrayIcon
+import java.awt.TrayIcon.MessageType
 import java.awt.image.BufferedImage
 import java.net.URI
 import java.util.concurrent.CountDownLatch
+import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.Path
 import kotlin.io.path.copyTo
@@ -22,6 +28,8 @@ import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.name
+import kotlin.io.path.readText
+import kotlin.io.path.writeText
 import kotlin.system.exitProcess
 
 /**
@@ -30,21 +38,27 @@ import kotlin.system.exitProcess
  */
 fun main(args: Array<String>) {
     val home = System.getProperty("apcdeck.home")?.let(::Path) ?: defaultHome()
-    installBundledPlugins(home)
+    installBundledPlugins(home, appVersion())
     val engine = Engine(home)
     engine.start()
-    AppBridge(engine).start()
+    val quit = CountDownLatch(1)
+    val updater = Updater(appVersion(), engine.storage.cacheDir, engine.logs.logger("mises à jour"), onQuit = { quit.countDown() })
+    AppBridge(engine, updater).start()
 
     val url = engine.web.uiUrl
-    val quit = CountDownLatch(1)
     Runtime.getRuntime().addShutdownHook(Thread { engine.shutdown() })
 
-    installTrayIcon(url) { quit.countDown() }
+    val tray = installTrayIcon(url, updater) { quit.countDown() }
+    updater.onAvailable = { tray?.let { t -> notifyUpdate(t, it) } }
+    updater.start()
     if ("--no-open" !in args) openUi(url)
 
     quit.await()
     exitProcess(0) // le hook d'arrêt ferme proprement le moteur
 }
+
+/** Version inscrite dans le manifeste de app.jar par le build ; null depuis les sources (gradlew run). */
+private fun appVersion(): String? = object {}.javaClass.`package`?.implementationVersion
 
 /**
  * Dossier de configuration et de données (créé au premier lancement) :
@@ -64,16 +78,28 @@ private fun defaultHome(): Path {
 }
 
 /**
- * Premier lancement d'une version packagée : copie les plugins livrés (-Dapcdeck.bundled) dans plugins/.
- * Ensuite l'utilisateur reste maître (un plugin supprimé ne revient pas).
+ * Plugins livrés avec une version packagée (-Dapcdeck.bundled) :
+ *   - premier lancement : tous copiés dans plugins/ ;
+ *   - première exécution d'une nouvelle version (mise à jour) : ils remplacent les plugins déjà installés de même
+ *     id, pour que les mises à jour de l'application leur parviennent. Un plugin supprimé ne revient pas.
  */
-private fun installBundledPlugins(home: Path) {
-    if (home.resolve("apcdeck.json").exists()) return
+private fun installBundledPlugins(home: Path, version: String?) {
     val bundled = System.getProperty("apcdeck.bundled")?.let(::Path)?.takeIf { it.isDirectory() } ?: return
     val plugins = home.resolve("plugins").createDirectories()
-    bundled.listDirectoryEntries("*.jar").forEach { jar ->
-        runCatching { jar.copyTo(plugins.resolve(jar.name)) }
+    val marker = home.resolve(".bundled-version") // version qui a installé les plugins livrés en dernier
+    if (!home.resolve("apcdeck.json").exists()) {
+        bundled.listDirectoryEntries("*.jar").forEach { jar ->
+            runCatching { jar.copyTo(plugins.resolve(jar.name)) }
+        }
+    } else if (version != null && runCatching { marker.readText() }.getOrNull() != version) {
+        val installed = plugins.listDirectoryEntries("*.jar")
+            .mapNotNull { jar -> runCatching { readManifest(jar).id to jar }.getOrNull() }.toMap()
+        bundled.listDirectoryEntries("*.jar").forEach { jar ->
+            val target = runCatching { readManifest(jar).id }.getOrNull()?.let(installed::get) ?: return@forEach
+            if (Files.mismatch(jar, target) != -1L) runCatching { jar.copyTo(target, overwrite = true) }
+        }
     }
+    version?.let { runCatching { marker.writeText(it) } }
 }
 
 /** Ouvre l'interface dans le navigateur par défaut. */
@@ -83,25 +109,42 @@ fun openUi(url: String) {
     if (!opened) println("Ouvre l'interface dans ton navigateur : $url")
 }
 
-private fun installTrayIcon(url: String, onQuit: () -> Unit) {
+private fun installTrayIcon(url: String, updater: Updater, onQuit: () -> Unit): TrayIcon? {
     if (GraphicsEnvironment.isHeadless() || !SystemTray.isSupported()) {
         println("Pas de zone de notification : Ctrl+C pour quitter. Interface : $url")
-        return
+        return null
     }
+    lateinit var icon: TrayIcon
     val menu = PopupMenu().apply {
         add(MenuItem("Ouvrir APC Deck").apply { addActionListener { openUi(url) } })
+        if (updater.current != null) {
+            add(MenuItem("Rechercher des mises à jour").apply {
+                addActionListener { Thread({ notifyUpdate(icon, updater.check(manual = true)) }, "update-check").start() }
+            })
+        }
         addSeparator()
         add(MenuItem("Quitter").apply { addActionListener { onQuit() } })
     }
-    val icon = TrayIcon(trayImage(), "APC Deck", menu).apply {
+    icon = TrayIcon(trayImage(), "APC Deck", menu).apply {
         isImageAutoSize = true
         addActionListener { openUi(url) } // double-clic
     }
-    try {
+    return try {
         SystemTray.getSystemTray().add(icon)
+        icon
     } catch (e: AWTException) {
         println("Icône de notification impossible (${e.message}). Interface : $url")
+        null
     }
+}
+
+/** Résultat d'une recherche de mise à jour, en bulle de notification (un clic dessus ouvre l'interface). */
+private fun notifyUpdate(tray: TrayIcon, u: UpdateState) = when (u.status) {
+    UpdateStatus.AVAILABLE -> tray.displayMessage("Mise à jour disponible",
+        "APC Deck ${u.latest} est sorti (tu as ${u.current}). Ouvre l'interface pour l'installer.", MessageType.INFO)
+    UpdateStatus.UP_TO_DATE -> tray.displayMessage("APC Deck est à jour", "Version ${u.current}", MessageType.NONE)
+    UpdateStatus.ERROR -> tray.displayMessage("Recherche de mise à jour impossible", u.error ?: "", MessageType.WARNING)
+    else -> {}
 }
 
 /** Petite grille 3×3 de pads colorés. */

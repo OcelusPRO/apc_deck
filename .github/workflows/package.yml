@@ -1,19 +1,42 @@
-# Construit les exécutables Windows, Linux et macOS (jpackage ne fait pas de compilation croisée :
-# chaque OS est construit sur sa propre machine). Déclenchement : à la main, ou sur un tag v*.
-name: Package
+# Release automatique : chaque commit sur main (ou master) construit les exécutables Windows, Linux et macOS
+# (jpackage ne fait pas de compilation croisée : chaque OS est construit sur sa propre machine) et publie une
+# release GitHub v<version>. L'application installée la trouve toute seule (Updater : releases/latest).
+#
+# Version : appVersion de gradle.properties, dernier nombre remplacé par le numéro du build (1.0.0 -> 1.0.42).
+# Le développement se fait sur la branche dev (workflow ci.yml : tests seulement).
+name: Release
 
 on:
-  workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches: [main, master]
+  workflow_dispatch:
+
+# Deux commits rapprochés : les releases sortent dans l'ordre, l'une après l'autre.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          base=$(grep -E '^appVersion=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "version=${base%.*}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
   package:
+    needs: version
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      VERSION_ARG: -PappVersion=${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,20 +52,40 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Tests
-        run: bash ./gradlew build --no-configuration-cache
+        run: bash ./gradlew build --no-configuration-cache $VERSION_ARG
         shell: bash
 
       - name: Archive portable + installeur
         # L'installeur .exe Windows nécessite WiX : présent sur les machines windows-latest de GitHub.
-        run: bash ./gradlew :app:packageApp :app:packageInstaller --no-configuration-cache
+        run: bash ./gradlew :app:packageApp :app:packageInstaller --no-configuration-cache $VERSION_ARG
         shell: bash
 
       - name: Jar multi-plateforme
         if: matrix.os == 'ubuntu-latest'
-        run: bash ./gradlew :app:packageJar --no-configuration-cache
+        run: bash ./gradlew :app:packageJar --no-configuration-cache $VERSION_ARG
         shell: bash
 
       - uses: actions/upload-artifact@v4
         with:
           name: APCDeck-${{ runner.os }}
           path: app/build/dist/*
+
+  release:
+    needs: [version, package]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "APC Deck $VERSION" --generate-notes

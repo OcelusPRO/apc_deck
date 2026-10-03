@@ -53,11 +53,14 @@ import kotlin.io.path.writeBytes
 
 /**
  * Relie le moteur à l'interface web : pousse l'état (événements SSE) et exécute les commandes.
- * Événements : plugins, device, settings, leds, input, learning, pager, update, logs (complet), log (une ligne).
+ * Événements : boot, plugins, device, settings, leds, input, learning, pager, update, logs (complet), log (une ligne).
+ * boot (identifiant de ce lancement) permet à une page restée ouverte de se recharger après un redémarrage.
  */
 class AppBridge(private val engine: Engine, private val updater: Updater? = null) : AppRoutes {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val web get() = engine.web
+
+    private val bootId = UUID.randomUUID().toString()
 
     private val pager: PagerPlugin? get() = engine.plugins.value.firstOrNull { it.manager }?.instance as? PagerPlugin
 
@@ -85,6 +88,7 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
     }
 
     override fun snapshot(): List<Pair<String, String>> = listOf(
+        "boot" to JsonPrimitive(bootId),
         "plugins" to pluginsJson(engine.plugins.value),
         "device" to deviceJson(engine.deviceStatus.value),
         "settings" to settingsJson(engine.settingsState.value),

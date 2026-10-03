@@ -34,7 +34,8 @@ import kotlin.system.exitProcess
 
 /**
  * Démarre le moteur et l'interface web, puis vit dans la zone de notification.
- * Options : --no-open (n'ouvre pas l'interface au démarrage).
+ * Options : --no-open (n'ouvre pas l'interface au démarrage) ; --after-update (relance après une mise à jour :
+ * l'interface ne s'ouvre que si aucun onglet resté ouvert ne s'y est reconnecté).
  */
 fun main(args: Array<String>) {
     val home = System.getProperty("apcdeck.home")?.let(::Path) ?: defaultHome()
@@ -51,7 +52,14 @@ fun main(args: Array<String>) {
     val tray = installTrayIcon(url, updater) { quit.countDown() }
     updater.onAvailable = { tray?.let { t -> notifyUpdate(t, it) } }
     updater.start()
-    if ("--no-open" !in args) openUi(url)
+    when {
+        "--no-open" in args -> {}
+        Updater.AFTER_UPDATE in args -> Thread({
+            Thread.sleep(6_000) // un onglet resté ouvert se reconnecte tout seul en quelques secondes
+            if (!engine.web.hasAppClients) openUi(url)
+        }, "open-ui").apply { isDaemon = true }.start()
+        else -> openUi(url)
+    }
 
     quit.await()
     exitProcess(0) // le hook d'arrêt ferme proprement le moteur

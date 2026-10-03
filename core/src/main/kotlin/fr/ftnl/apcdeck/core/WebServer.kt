@@ -81,6 +81,9 @@ class WebServer(
     /** Envoie un événement aux pages ouvertes du plugin. */
     fun emit(pluginId: String, event: String, json: String) = broadcast(pluginId, event, json)
 
+    /** Vrai si au moins une interface de l'application est ouverte (connectée au flux d'état). */
+    val hasAppClients: Boolean get() = !streams[APP_STREAM].isNullOrEmpty()
+
     /** Envoie un événement aux interfaces de l'application ouvertes. */
     fun emitApp(event: String, json: String) = broadcast(APP_STREAM, event, json)
 

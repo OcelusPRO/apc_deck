@@ -126,7 +126,7 @@ function UpdateBanner({ update }: { update: Update }) {
   const install = () => {
     if (window.confirm(`Installer APC Deck ${update.latest} ?
 
-L'installeur va se lancer et l'application se fermera pour le laisser faire.`)) {
+L'installeur va se lancer et l'application se fermera pour le laisser faire. Une fois l'installation terminée, une fenêtre proposera de la relancer (cette page se rechargera toute seule).`)) {
       void cmd("installUpdate");
     }
   };

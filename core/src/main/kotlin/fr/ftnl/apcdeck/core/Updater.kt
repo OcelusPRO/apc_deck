@@ -46,7 +46,8 @@ data class UpdateState(
  * Recherche des mises à jour dans les releases GitHub du projet : au démarrage puis toutes les [interval].
  * Une version plus récente est signalée (interface + [onAvailable]) ; l'installation se fait sur demande :
  * téléchargement de l'installeur de l'OS, lancement, puis fermeture de l'application ([onQuit]) pour qu'il
- * puisse remplacer ses fichiers.
+ * puisse remplacer ses fichiers. Sous Windows, une fois l'installeur terminé, une fenêtre propose de relancer
+ * l'application (option [AFTER_UPDATE] : l'interface ne se rouvre que si aucun onglet ne l'affiche déjà).
  *
  * [current] null (lancement depuis les sources, sans version) : recherche désactivée.
  */
@@ -171,15 +172,29 @@ class Updater(
         return Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING)
     }
 
-    /** Windows : l'installeur .exe (il met à jour l'installation existante) ; ailleurs : l'outil du système. */
+    /**
+     * Windows : l'installeur .exe (il met à jour l'installation existante), suivi par un petit script qui attend
+     * sa fin puis propose de relancer l'application ; ailleurs : l'outil du système (relance à la main).
+     */
     private fun launchInstaller(file: Path) {
         val path = file.toAbsolutePath().toString()
+        val app = ProcessHandle.current().info().command().orElse(null)
+            ?.takeIf { it.endsWith(".exe", ignoreCase = true) && !it.endsWith("java.exe", ignoreCase = true) }
         val command = when (Os.current) {
+            Os.WINDOWS if app != null -> {
+                // BOM : Windows PowerShell lit sinon le script comme de l'ANSI (accents abîmés).
+                val script = file.resolveSibling("relaunch.ps1")
+                Files.write(script, byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + RELAUNCH_SCRIPT.toByteArray())
+                listOf("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                    "-File", script.toString(), "-Installer", path, "-App", app)
+            }
             Os.WINDOWS -> listOf(path)
             Os.MACOS -> listOf("open", path)
             Os.LINUX -> listOf("xdg-open", path)
         }
-        ProcessBuilder(command).inheritIO().start()
+        // Le processus lancé survit à la fermeture de l'application.
+        ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .redirectError(ProcessBuilder.Redirect.DISCARD).start()
     }
 
     private fun installerExtension() = when (Os.current) {
@@ -225,6 +240,21 @@ class Updater(
 
     companion object {
         const val REPO = "OcelusPRO/apc_deck"
+
+        /** Option de lancement après une mise à jour (voir [Updater]). */
+        const val AFTER_UPDATE = "--after-update"
+
+        /** Attend l'installeur puis propose la relance (fenêtre au premier plan). */
+        private val RELAUNCH_SCRIPT = $$"""
+            param([string]$Installer, [string]$App)
+            $process = Start-Process -FilePath $Installer -PassThru -Wait
+            Add-Type -AssemblyName System.Windows.Forms
+            $owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }
+            $message = if ($process.ExitCode -eq 0) { "La mise à jour d'APC Deck est installée. Relancer l'application maintenant ?" }
+                       else { "La mise à jour n'a pas été terminée. Relancer APC Deck ?" }
+            $answer = [System.Windows.Forms.MessageBox]::Show($owner, $message, "APC Deck", "YesNo", "Question")
+            if ($answer -eq "Yes") { Start-Process -FilePath $App -ArgumentList "$$AFTER_UPDATE" }
+        """.trimIndent()
 
         /** Compare "1.10.0" et "1.9.2" nombre par nombre (un suffixe comme "-beta" est ignoré). */
         fun compareVersions(a: String, b: String): Int {

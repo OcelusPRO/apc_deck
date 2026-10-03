@@ -98,13 +98,23 @@ const EMPTY: AppState = {
   logs: [],
 };
 
-/** État de l'application, alimenté par le flux SSE /<jeton>/app/events. */
+/**
+ * État de l'application, alimenté par le flux SSE /<jeton>/app/events. Application arrêtée : le navigateur se
+ * reconnecte tout seul ; si elle a redémarré entre-temps (mise à jour…), la page se recharge pour prendre la
+ * nouvelle interface.
+ */
 export function useAppState(): AppState {
   const [state, setState] = useState<AppState>(EMPTY);
   useEffect(() => {
+    let boot: string | null = null;
     const source = new EventSource(`${BASE}app/events`);
     source.onmessage = (message) => {
       const { event, data } = JSON.parse(message.data as string) as { event: string; data: unknown };
+      if (event === "boot") {
+        if (boot !== null && boot !== data) location.reload();
+        boot = data as string;
+        return;
+      }
       setState((s) => {
         switch (event) {
           case "log":

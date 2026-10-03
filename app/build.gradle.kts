@@ -145,7 +145,7 @@ tasks.register<Exec>("packageInstaller") {
     val installer = output.resolve(when (os) {
         Os.WINDOWS -> "$appName-$appVersion.exe"
         Os.MACOS -> "$appName-$appVersion.dmg"
-        Os.LINUX -> "${appName.lowercase()}_$appVersion-1_amd64.deb"
+        Os.LINUX -> "${appName.lowercase()}_${appVersion}_amd64.deb"
     })
     outputs.file(installer)
     // jpackage n'écrase pas l'installeur précédent (créé en lecture seule) : on le retire d'abord.

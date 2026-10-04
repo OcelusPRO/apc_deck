@@ -28,6 +28,13 @@ import fr.ftnl.apcdeck.core.builtin.BUILTIN_PLUGINS
 import fr.ftnl.apcdeck.core.device.ApcDevice
 import fr.ftnl.apcdeck.core.device.DeviceMode
 import fr.ftnl.apcdeck.core.device.KnobMode
+import fr.ftnl.apcdeck.core.remote.Message
+import fr.ftnl.apcdeck.core.remote.RemoteClient
+import fr.ftnl.apcdeck.core.remote.RemoteServer
+import fr.ftnl.apcdeck.core.remote.RemoteStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -193,6 +200,14 @@ class Engine(
         executor.scheduleAtFixedRate({ guarded { tick() }; flush() }, 0, 1000L / settings.fps.coerceIn(1, 120), TimeUnit.MILLISECONDS)
         executor.scheduleWithFixedDelay({ if (!device.isOpen) guarded { connect() } }, 0, 3, TimeUnit.SECONDS)
         runCatching { watchPluginsDir() }.onFailure { log.error("surveillance du dossier plugins impossible", it) }
+        post {
+            if (settings.remoteEnabled) applyRemoteServer()
+            settings.remoteLastServer.takeIf { it.isNotBlank() }?.let { fingerprint ->
+                runCatching { remoteClient.connect(fingerprint) }.onFailure { updateSettings { s -> s.copy(remoteLastServer = "") } }
+            }
+        }
+        remoteScope.launch { surface.snapshot.collect { remoteServer.broadcast(Message.Leds(it)) } }
+        remoteScope.launch { input.collect { remoteServer.broadcast(Message.State(it)) } }
         runCatching { web.start() }
             .onSuccess { log.info("interface : ${web.uiUrl}") }
             .onFailure { log.error("serveur web impossible à démarrer", it) }
@@ -202,6 +217,8 @@ class Engine(
     fun rescan() = post { rescanNow() }
 
     fun shutdown() {
+        runCatching { remoteServer.stop() }
+        runCatching { remoteClient.disconnect() }
         runCatching {
             executor.submit {
                 handles.values.forEach { h -> call(h) { it.onUnload() }; h.release() }
@@ -333,6 +350,11 @@ class Engine(
 
     private fun dispatch(event: ApcEvent) {
         _input.value = _input.value.after(event)
+        if (remoteLinked) {
+            // Ce mobile pilote un PC : tout ce qui est joué ici (APC virtuel ou branché) part vers lui.
+            remoteClient.send(event)
+            return
+        }
         if (learning != null && captureBinding(event)) return
         swallowRelease?.let { pending ->
             // Relâchement de l'entrée qui vient d'être assignée : personne ne doit le recevoir.
@@ -352,7 +374,110 @@ class Engine(
             .forEach { h -> call(h) { it.onBackgroundEvent(event) } }
     }
 
-    fun ledsFor(id: String): Leds = if (id == foregroundId && !paused) surface else NullLeds
+    fun ledsFor(id: String): Leds = if (id == foregroundId && !paused && !remoteLinked) surface else NullLeds
+
+    /** Efface l'écran LED, sauf quand il affiche celui d'un PC piloté à distance. */
+    private fun clearSurface() {
+        if (!remoteLinked) surface.clear()
+    }
+
+    // --- contrôle à distance ---------------------------------------------------------
+
+    val remoteStore = RemoteStore(storage.home)
+    private val remoteLog = logs.logger("distance")
+    private val remoteScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Change à chaque modification de l'état du contrôle à distance (pour l'interface). */
+    private val _remoteVersion = MutableStateFlow(0)
+    val remoteVersion: StateFlow<Int> = _remoteVersion
+
+    /** Erreur au démarrage du serveur (port occupé…), null sinon. */
+    @Volatile
+    var remoteError: String? = null
+        private set
+
+    val deviceName: String get() = settings.deviceName.ifBlank { platform.deviceName }
+
+    private fun remoteChanged() = _remoteVersion.update { it + 1 }
+
+    /** Côté PC : les mobiles appairés jouent comme un APC branché. */
+    val remoteServer = RemoteServer(
+        remoteStore, { deviceName }, remoteLog,
+        onInput = { event -> post { dispatchRemote(event) } },
+        initial = { listOf(Message.Leds(surface.snapshot.value), Message.State(_input.value)) },
+        onChange = ::remoteChanged,
+    )
+
+    /** Côté mobile : sert d'APC à un PC. */
+    val remoteClient = RemoteClient(
+        remoteStore, { deviceName }, remoteLog,
+        onMessage = { message -> post { onRemoteMessage(message) } },
+        onLink = { linked -> post { setRemoteLinked(linked) } },
+    )
+
+    /** Connecté à un PC en tant qu'APC : événements envoyés au PC, LED reçues de lui. */
+    private var remoteLinked = false
+
+    fun setRemoteEnabled(enabled: Boolean) = post {
+        updateSettings { it.copy(remoteEnabled = enabled) }
+        applyRemoteServer()
+    }
+
+    fun setDeviceName(name: String) = post {
+        updateSettings { it.copy(deviceName = name.trim().take(40)) }
+        remoteChanged()
+    }
+
+    /** Retient le PC à reconnecter au prochain lancement (vide = aucun). */
+    fun rememberRemoteServer(fingerprint: String) = post {
+        updateSettings { it.copy(remoteLastServer = fingerprint) }
+    }
+
+    private fun applyRemoteServer() {
+        if (settings.remoteEnabled) {
+            try {
+                remoteServer.start(settings.remotePort)
+                remoteError = null
+            } catch (t: Throwable) {
+                remoteError = "port ${settings.remotePort} indisponible : ${t.message}"
+                log.error("contrôle à distance impossible à démarrer", t)
+            }
+        } else {
+            remoteServer.stop()
+            remoteError = null
+        }
+        remoteChanged()
+    }
+
+    /** Entrée d'un mobile : le potar est recalculé d'après sa position ici. */
+    private fun dispatchRemote(event: ApcEvent) {
+        val e = if (event is KnobEvent) {
+            event.copy(value = (_input.value.knobs.getOrElse(event.index) { 64 } + event.delta).coerceIn(0, 127))
+        } else event
+        dispatch(e)
+    }
+
+    private fun onRemoteMessage(message: Message) {
+        if (!remoteLinked) return
+        when (message) {
+            is Message.Leds -> surface.load(message.snapshot)
+            is Message.State -> _input.value = message.input
+            else -> {}
+        }
+    }
+
+    private fun setRemoteLinked(linked: Boolean) {
+        if (linked == remoteLinked) return
+        remoteLinked = linked
+        surface.clear()
+        _input.value = InputState(knobs = _input.value.knobs)
+        if (!linked) {
+            // L'écran LED revient au plugin au premier plan.
+            val h = foregroundId?.let(handles::get)
+            if (paused) drawPaused() else h?.let { call(it) { p -> p.onActivate() } }
+        }
+        remoteChanged()
+    }
 
     // --- assignation des entrées (mode écoute) -----------------------------------
 
@@ -504,7 +629,7 @@ class Engine(
         }
         foregroundId = id
         paused = false
-        surface.clear()
+        clearSurface()
         log.debug("premier plan : $id")
         call(h) { it.onActivate() }
         publish()
@@ -514,7 +639,7 @@ class Engine(
     private fun refreshManager() {
         handles[managerId]?.let { h -> call(h) { (it as? ManagerPlugin)?.onPluginsChanged() } }
         if (foregroundId == managerId && !paused) {
-            surface.clear()
+            clearSurface()
             handles[managerId]?.let { h -> call(h) { it.onActivate() } }
         }
     }
@@ -527,14 +652,11 @@ class Engine(
 
     private fun togglePauseNow() {
         val h = foregroundId?.takeIf { it != managerId }?.let(handles::get) ?: return
-        surface.clear()
+        clearSurface()
         paused = !paused
         if (paused) {
             call(h) { it.onPause() }
-            for (y in 1..3) {
-                surface.pad(2, y, PadColor.WHITE, Effect.PULSE)
-                surface.pad(5, y, PadColor.WHITE, Effect.PULSE)
-            }
+            drawPaused()
         } else {
             call(h) { it.onResume() }
         }
@@ -542,6 +664,15 @@ class Engine(
         publish()
     }
 
+
+    /** Motif « pause » (deux barres blanches qui pulsent). */
+    private fun drawPaused() {
+        if (remoteLinked) return
+        for (y in 1..3) {
+            surface.pad(2, y, PadColor.WHITE, Effect.PULSE)
+            surface.pad(5, y, PadColor.WHITE, Effect.PULSE)
+        }
+    }
 
     private fun setEnabledNow(id: String, enabled: Boolean) {
         val h = handles[id] ?: return

@@ -8,9 +8,11 @@ kotlinxDatetime = "0.8.0"
 kotlinxSerializationJSON = "1.11.0"
 kotlinxCoroutines = "1.10.2"
 animalSniffer = "2.0.1"
+zxing = "3.5.4"
 
 [libraries]
 kotlinGradlePlugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
+zxing = { module = "com.google.zxing:core", version.ref = "zxing" }
 animalSnifferGradlePlugin = { module = "ru.vyarus:gradle-animalsniffer-plugin", version.ref = "animalSniffer" }
 kotlinxDatetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinxDatetime" }
 kotlinxSerialization = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJSON" }

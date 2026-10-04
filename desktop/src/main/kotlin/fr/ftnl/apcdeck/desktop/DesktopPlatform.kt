@@ -9,6 +9,7 @@ import java.nio.file.Path
 
 /** PC (Windows, macOS, Linux). */
 object DesktopPlatform : Platform {
+    override val id: String = "desktop"
     override val midi: MidiBackend = JavaxMidi
     override val audio: Audio = JavaSound
     override val pluginLoader: PluginLoader = JarPluginLoader

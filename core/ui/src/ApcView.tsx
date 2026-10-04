@@ -19,19 +19,23 @@ const simulate = (data: Record<string, unknown>) => cmd("simulate", data);
  * [virtual] : l'APC virtuel remplace l'appareil absent : vue agrandie (tactile), clavier de 25 touches avec octaves
  * et jouable au clavier de l'ordinateur.
  */
-export function ApcView({ state, virtual = false }: { state: AppState; virtual?: boolean }) {
+export function ApcView({ state, virtual = false, remoteServer = null }: { state: AppState; virtual?: boolean; remoteServer?: string | null }) {
   const leds = state.leds;
   const input = state.input ?? { pads: [], buttons: [], notes: [], knobs: Array(8).fill(64) };
   const pressedPads = new Set(input.pads);
   const pressedButtons = new Set(input.buttons);
   // Taille d'un pad : fixe pour le miroir ; à la largeur disponible (8 pads + colonne des scènes) en virtuel.
-  const size: CSSProperties = { ["--pad" as string]: virtual ? "clamp(40px, calc((100cqi - 8 * 6px - 14px) / 9), 96px)" : "46px" };
+  const size: CSSProperties = { ["--pad" as string]: virtual ? "clamp(26px, calc((100cqi - 8 * 6px - 14px) / 9), 96px)" : "46px" };
 
   return (
     <div className={cx("flex min-h-full flex-col gap-3.5 p-4", virtual && "@container select-none")} style={size}>
       <div className="flex items-center gap-3">
-        <h3 className="m-0 text-sm font-semibold whitespace-nowrap">{virtual ? "APC virtuel" : "APC Key 25 mk2"}</h3>
-        {virtual && (
+        <h3 className="m-0 text-sm font-semibold whitespace-nowrap">{remoteServer ? `APC de ${remoteServer}` : virtual ? "APC virtuel" : "APC Key 25 mk2"}</h3>
+        {remoteServer ? (
+          <span className="text-xs text-muted">
+            Cet appareil pilote {remoteServer} : ce qui est joué ici (écran ou APC branché) part vers lui, ses LED s'affichent ici.
+          </span>
+        ) : virtual && (
           <span className="text-xs text-muted">
             Aucun APC branché : cette vue le remplace (souris, tactile, clavier de l'ordinateur). Un APC réel branché reprend la main.
           </span>
@@ -180,7 +184,7 @@ function VirtualKeyboard({ notes }: { notes: number[] }) {
           {noteName(low)} – {noteName(low + KEYS - 1)}
         </span>
         <Button size="sm" disabled={octave >= MAX_OCTAVE} onClick={() => setOctave((o) => o + 1)}>Octave +</Button>
-        <span className="text-xs text-muted">
+        <span className="text-xs text-muted pointer-coarse:hidden">
           Clavier de l'ordinateur : rangée du milieu (Q S D F… en AZERTY) et rangée du dessus pour les dièses ; W / X pour
           l'octave (Z / X en QWERTY).
         </span>

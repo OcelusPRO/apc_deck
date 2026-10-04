@@ -1,10 +1,13 @@
 import type { ReactNode } from "react";
 import { Button, Switch, cx, padHex } from "@apcdeck/web";
-import { cmd } from "./api";
+import { cmd, uploadJars } from "./api";
 import type { PluginView } from "./types";
 
 /** Entrée « appareil » de la liste (miroir de l'APC). */
 export const DEVICE = "#apc";
+
+/** Entrée « contrôle à distance » de la liste. */
+export const REMOTE = "#remote";
 
 function statusText(p: PluginView): string {
   if (p.status === "ERROR") return `Erreur : ${p.error ?? "?"}`;
@@ -13,18 +16,42 @@ function statusText(p: PluginView): string {
   return (p.paused ? "En pause" : p.foreground ? "Au premier plan" : "Actif") + (p.listening ? " · écoute en arrière-plan" : "");
 }
 
-export function Sidebar({ plugins, selected, onSelect }: { plugins: PluginView[]; selected: string; onSelect: (id: string) => void }) {
+export function Sidebar({ plugins, selected, onSelect, remoteHint, className }: {
+  plugins: PluginView[];
+  selected: string;
+  onSelect: (id: string) => void;
+  /** État du contrôle à distance, affiché sous son entrée. */
+  remoteHint: string;
+  className?: string;
+}) {
   return (
-    <aside className="overflow-auto border-r border-line p-3">
+    <aside className={cx("overflow-auto border-line p-3 lg:border-r", className)}>
       <div className="flex items-center justify-between">
         <h2 className="m-0 text-base font-semibold">Plugins</h2>
         <Button variant="text" onClick={() => cmd("rescan")}>Rescanner le dossier</Button>
       </div>
       <p className="text-xs text-muted">Glisse un .jar sur la fenêtre, ou copie-le dans le dossier plugins/ : il est détecté automatiquement.</p>
+      <label className="mb-1 inline-flex cursor-pointer text-[13px] text-accent lg:hidden">
+        Ajouter un plugin (.jar)…
+        <input
+          type="file"
+          accept=".jar"
+          multiple
+          hidden
+          onChange={(e) => {
+            if (e.target.files) void uploadJars(e.target.files);
+            e.target.value = "";
+          }}
+        />
+      </label>
       <div className="mt-2 flex flex-col gap-2">
         <Card selected={selected === DEVICE} onClick={() => onSelect(DEVICE)} dataId={DEVICE}>
           <span className="font-semibold">APC Key 25 mk2</span>
           <span className="block text-xs text-muted">Miroir des LED, potars, clavier, journal</span>
+        </Card>
+        <Card selected={selected === REMOTE} onClick={() => onSelect(REMOTE)} dataId={REMOTE}>
+          <span className="font-semibold">Contrôle à distance</span>
+          <span className="block text-xs text-muted">{remoteHint}</span>
         </Card>
         {plugins.map((p) => {
           const enabled = p.status === "ENABLED";

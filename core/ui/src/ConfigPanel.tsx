@@ -6,9 +6,9 @@ import type { AppState, BindingValue, ConfigField, PluginView } from "./types";
 const input = "w-full rounded-lg border border-[#938f99] bg-surface px-2.5 py-1.5 text-text focus:border-transparent focus:outline-2 focus:outline-accent";
 
 /** Configuration du plugin sélectionné : formulaire généré depuis son schéma (ConfigSpec). */
-export function ConfigPanel({ plugin, learning }: { plugin: PluginView | null; learning: AppState["learning"] }) {
+export function ConfigPanel({ plugin, learning, className }: { plugin: PluginView | null; learning: AppState["learning"]; className?: string }) {
   return (
-    <aside id="config" className="overflow-auto border-l border-line p-4">
+    <aside id="config" className={cx("overflow-auto border-line p-4 lg:border-l", className)}>
       {!plugin ? (
         <>
           <h2 className="m-0 text-xl font-medium">APC Key 25 mk2</h2>

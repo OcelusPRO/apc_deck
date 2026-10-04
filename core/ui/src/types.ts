@@ -92,16 +92,58 @@ export interface Update {
   plugins: PluginUpdate[];
 }
 
+/** Mobile autorisé à piloter ce PC. */
+export interface RemoteDevice {
+  fingerprint: string;
+  name: string;
+  pairedAt: number;
+  lastSeen: number;
+  connected: boolean;
+  address: string | null;
+}
+
+/** PC appairé à cet appareil. */
+export interface RemoteServerEntry {
+  fingerprint: string;
+  name: string;
+  hosts: string[];
+  port: number;
+  pairedAt: number;
+}
+
+/** Contrôle à distance : ce PC piloté par des mobiles (server), cet appareil pilotant un PC (client). */
+export interface Remote {
+  deviceName: string;
+  server: {
+    enabled: boolean;
+    running: boolean;
+    port: number;
+    error: string | null;
+    fingerprint: string;
+    pairing: { link: string; hosts: string[]; qrSize: number; qrPath: string; expiresAt: number } | null;
+    devices: RemoteDevice[];
+  };
+  client: {
+    state: "IDLE" | "CONNECTING" | "CONNECTED" | "ERROR";
+    server: string | null;
+    serverName: string | null;
+    address: string | null;
+    error: string | null;
+    servers: RemoteServerEntry[];
+  };
+}
+
 export interface AppState {
   plugins: PluginView[];
   /** virtual : l'APC virtuel remplace l'appareil (activé, et aucun APC réel branché). */
   device: { connected: boolean; detail: string; virtual?: boolean };
   /** virtual : APC virtuel activé (réglage, même quand un APC réel est branché). */
-  settings: { mode: string; knobs: string; virtual?: boolean; modes: string[] } | null;
+  settings: { mode: string; knobs: string; virtual?: boolean; modes: string[]; platform?: "desktop" | "android" } | null;
   leds: Leds | null;
   input: Input | null;
   learning: { pluginId: string; fieldKey: string } | null;
   pager: Pager | null;
   update: Update | null;
+  remote: Remote | null;
   logs: LogLine[];
 }

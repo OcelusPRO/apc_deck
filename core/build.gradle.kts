@@ -9,5 +9,6 @@ plugins {
 dependencies {
     api(project(":api"))
     implementation(libs.kotlinxSerialization)
+    implementation(libs.zxing) // QR code d'appairage du contrôle à distance
     testImplementation(kotlin("test"))
 }

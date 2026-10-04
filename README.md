@@ -24,6 +24,26 @@ physiques : rangée du milieu pour les touches blanches, rangée du dessus pour 
 l'octave). Les plugins reçoivent les mêmes événements qu'avec l'appareil. Le réglage est conservé ; dès qu'un APC
 réel est branché il reprend la main, et l'APC virtuel revient s'il est débranché.
 
+## Contrôle à distance (mobile ↔ PC)
+
+Un mobile sur le même réseau local peut servir d'APC à un PC : il affiche ses LED et lui envoie ce qui est joué
+(APC virtuel sur l'écran, ou APC branché au mobile en USB). Sur le PC : **Contrôle à distance** → activer, puis
+**Appairer un mobile** affiche un QR code ; sur le mobile : **Contrôle à distance → Scanner le QR code d'un PC**
+(ou coller le lien d'appairage). Les reconnexions suivantes sont automatiques ; un appareil se retire depuis le PC.
+
+Sécurité (`core/.../remote`, protocole documenté dans `RemoteProtocol.kt`) :
+- chaque installation a une paire de clés P-256 (`remote/identity.json`) ;
+- le QR code contient l'empreinte de la clé du PC et un secret aléatoire de 128 bits, à usage unique, valable
+  5 minutes ;
+- à chaque connexion : échange de clés éphémères ECDH (secret persistant), le PC signe la conversation avec sa clé
+  (le mobile vérifie l'empreinte épinglée : pas d'usurpation du PC), le mobile signe avec la sienne (le PC ne connaît
+  que les appareils appairés) ; à l'appairage le mobile prouve qu'il connaît le secret par un HMAC lié à la
+  conversation, le secret ne circule jamais ;
+- ensuite tout est chiffré et authentifié (AES-256-GCM, une clé par direction, compteurs : rien ne peut être
+  modifié, rejoué ou réordonné).
+
+Le PC écoute sur le port 47810 (TCP) seulement quand le contrôle à distance est activé.
+
 ## Développement
 
 ```bash

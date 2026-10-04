@@ -21,12 +21,12 @@ class EngineService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_QUIT) {
-            (application as ApcApp).engine.shutdown()
+            (application as ApcApp).engineIfStarted?.shutdown()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             exitProcess(0)
         }
-        (application as ApcApp).engine // démarre le moteur s'il ne l'est pas
+        Thread({ (application as ApcApp).engine }, "apc-start").start() // démarre le moteur s'il ne l'est pas
         val notification = notification()
         if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         else startForeground(NOTIFICATION_ID, notification)

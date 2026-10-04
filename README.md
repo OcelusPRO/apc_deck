@@ -11,6 +11,7 @@ notification) et son interface s'ouvre dans le navigateur par défaut.
 | `core` | Moteur commun au PC et à Android : protocole de l'APC, routage, plugins, serveur web local, interface (`ui/`) |
 | `desktop` | Implémentations PC du cœur : MIDI (`javax.sound.midi`), son (`javax.sound.sampled`), jars JVM, mises à jour |
 | `app` | Application PC : point d'entrée, icône de notification, packaging |
+| `android` | Application Android : WebView, service, MIDI USB, son, plugins dex (inclus avec `-Pandroid=true`) |
 | `plugins/macros` | Plugin Macros (scripts shell sur les pads), livré avec l'application |
 | `plugins/synth` | Plugin Synthé (synthé polyphonique joué au clavier), livré avec l'application |
 | `plugins/soundboard` | Plugin Soundboard (un son par pad, sur 40 pages), livré avec l'application |
@@ -23,6 +24,26 @@ verticalement, clavier de 25 touches avec octaves. Le clavier de l'ordinateur jo
 physiques : rangée du milieu pour les touches blanches, rangée du dessus pour les dièses, `W` / `X` en AZERTY pour
 l'octave). Les plugins reçoivent les mêmes événements qu'avec l'appareil. Le réglage est conservé ; dès qu'un APC
 réel est branché il reprend la main, et l'APC virtuel revient s'il est débranché.
+
+## Android
+
+L'app Android embarque le même moteur et la même interface que sur PC, avec le Synthé et la Soundboard. Un APC
+Key 25 mk2 se branche en USB (câble OTG) ; sans APC, l'APC virtuel s'utilise au doigt (multi-touch). L'app tourne en
+arrière-plan (notification « APC Deck actif », « Quitter » pour l'arrêter). Android 8.0 minimum.
+
+```bash
+./gradlew -Pandroid=true :android:assembleDebug   # APK -> android/build/outputs/apk/debug (SDK Android requis)
+```
+
+- Le module `android` n'est inclus qu'avec `-Pandroid=true` : les builds PC n'ont pas besoin du SDK.
+- `api`, `core` et les plugins officiels sont vérifiés à chaque `gradlew check` : leur bytecode ne doit utiliser que
+  des API présentes sur Android 8.0 (convention `android-compatible`, Animal Sniffer).
+- Plugins tiers : Android n'exécute pas les classes JVM, le jar doit aussi contenir un `classes.dex` (outil `d8` du
+  SDK Android : `d8 --release --min-api 26 --lib android.jar --output dex.zip plugin.jar`, puis ajouter le
+  `classes.dex` obtenu au jar). Le son passe par `ctx.audio` (API v2) au lieu de `javax.sound`, absent d'Android.
+- Releases : l'APK est joint à chaque release. Pour qu'il soit signé toujours avec la même clé (sinon Android refuse
+  les mises à jour), définir les secrets `APCDECK_KEYSTORE_BASE64` (keystore en base64), `APCDECK_KEYSTORE_PASSWORD`,
+  `APCDECK_KEY_ALIAS` et `APCDECK_KEY_PASSWORD` ; sans eux, l'APK publié est un APK de développement.
 
 ## Contrôle à distance (mobile ↔ PC)
 

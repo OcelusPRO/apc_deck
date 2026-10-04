@@ -14,13 +14,18 @@ import java.io.FileNotFoundException
 
 /** Le moteur vit aussi longtemps que le processus (le service le garde en vie hors de l'écran). */
 class ApcApp : Application() {
-    val engine: Engine by lazy {
+    private val lazyEngine = lazy {
         val home = filesDir.toPath().resolve("apcdeck")
         Engine(home, AndroidPlatform(this), BUILTIN_PLUGINS + bundled("synth", ::SynthPlugin) + bundled("soundboard", ::SoundboardPlugin)).also {
             it.start()
             AppBridge(it).start()
         }
     }
+
+    /** Démarré au premier accès (accès disque et réseau : pas sur le thread de l'interface). */
+    val engine: Engine by lazyEngine
+
+    val engineIfStarted: Engine? get() = if (lazyEngine.isInitialized()) lazyEngine.value else null
 
     /**
      * Plugin officiel compilé dans l'app : son plugin.json et sa page web sont dans les assets (plugins/<id>/),

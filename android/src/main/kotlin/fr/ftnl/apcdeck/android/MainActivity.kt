@@ -93,7 +93,11 @@ class MainActivity : Activity() {
             // Retour arrière prédictif (Android 13+, imposé à partir d'Android 16) : onBackPressed n'est plus appelé.
             onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { back() }
         }
-        web.loadUrl((application as ApcApp).engine.web.uiUrl)
+        // Démarrage du moteur (disque, sockets) hors du thread de l'interface, puis la page.
+        Thread({
+            val url = (application as ApcApp).engine.web.uiUrl
+            runOnUiThread { if (!isDestroyed) web.loadUrl(url) }
+        }, "apc-start").start()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

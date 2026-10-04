@@ -87,8 +87,6 @@ jobs:
         with:
           node-version: 22
 
-      - uses: android-actions/setup-android@v3
-
       - uses: gradle/actions/setup-gradle@v4
 
       # APK signé si la clé est fournie (secrets APCDECK_KEYSTORE_BASE64, APCDECK_KEYSTORE_PASSWORD, APCDECK_KEY_ALIAS,

@@ -70,8 +70,55 @@ jobs:
           name: APCDeck-${{ runner.os }}
           path: app/build/dist/*
 
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # APK signé si la clé est fournie (secrets APCDECK_KEYSTORE_BASE64, APCDECK_KEYSTORE_PASSWORD, APCDECK_KEY_ALIAS,
+      # APCDECK_KEY_PASSWORD) : toujours la même clé, sinon Android refuse d'installer une mise à jour par-dessus.
+      # Sans clé : APK de développement (installable, mais signé par une clé propre à chaque build).
+      - name: APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.APCDECK_KEYSTORE_BASE64 }}
+          APCDECK_KEYSTORE_PASSWORD: ${{ secrets.APCDECK_KEYSTORE_PASSWORD }}
+          APCDECK_KEY_ALIAS: ${{ secrets.APCDECK_KEY_ALIAS }}
+          APCDECK_KEY_PASSWORD: ${{ secrets.APCDECK_KEY_PASSWORD }}
+        run: |
+          mkdir -p dist
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/apcdeck.jks"
+            export APCDECK_KEYSTORE="$RUNNER_TEMP/apcdeck.jks"
+            bash ./gradlew -Pandroid=true -PappVersion=$VERSION :android:assembleRelease --no-configuration-cache
+            cp android/build/outputs/apk/release/*.apk "dist/APCDeck-$VERSION-android.apk"
+          else
+            bash ./gradlew -Pandroid=true -PappVersion=$VERSION :android:assembleDebug --no-configuration-cache
+            cp android/build/outputs/apk/debug/*.apk "dist/APCDeck-$VERSION-android-debug.apk"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: APCDeck-Android
+          path: dist/*
+
   release:
-    needs: [version, package]
+    needs: [version, package, android]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:

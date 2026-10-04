@@ -36,6 +36,11 @@ fun readManifest(jar: Path): PluginManifest {
         val entry = zip.getEntry("plugin.json") ?: error("plugin.json absent de ${jar.name}")
         zip.getInputStream(entry).bufferedReader().readText()
     }
+    return parseManifest(text)
+}
+
+/** Contenu d'un plugin.json -> manifeste validé (plugins embarqués dans l'app Android). */
+fun parseManifest(text: String): PluginManifest {
     val m = JSON.decodeFromString<ManifestJson>(text)
     require(ID_PATTERN.matches(m.id)) { "id invalide '${m.id}' (minuscules, chiffres, - et _)" }
     require(m.apiVersion <= API_VERSION) { "${m.id} demande l'API v${m.apiVersion}, l'application fournit v$API_VERSION" }

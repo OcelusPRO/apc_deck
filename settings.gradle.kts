@@ -9,6 +9,9 @@ pluginManagement {
         google()
         mavenCentral()
     }
+    plugins {
+        id("com.android.application") version "9.0.0" // Android Gradle Plugin (module android)
+    }
 }
 
 dependencyResolutionManagement { // Use Maven Central as the default repository (where Gradle will download dependencies) in all subprojects.
@@ -32,5 +35,9 @@ include(":app")
 include(":plugins:macros")
 include(":plugins:synth")
 include(":plugins:soundboard")
+
+// App Android : seulement avec le SDK Android installé (gradlew -Pandroid=true …), pour que les builds PC n'en
+// dépendent pas.
+if (providers.gradleProperty("android").orNull == "true") include(":android")
 
 rootProject.name = "MIDI_streamdeck"

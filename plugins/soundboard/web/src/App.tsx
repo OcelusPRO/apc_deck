@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { Banner, Button, Slider, cx, padHex, textOn, usePluginState, APC_PALETTE } from "@apcdeck/web";
 import { uploadSound } from "./audio";
-import { sameSlot, slotKey, type Slot, type Sound, type SoundboardState } from "./types";
+import { Trim } from "./Trim";
+import { MAX_VOLUME, sameSlot, slotKey, type Slot, type Sound, type SoundboardState } from "./types";
 
 const COLS = 8;
 const ROWS = 5;
@@ -43,6 +44,7 @@ export function App() {
     <div className="grid h-screen grid-cols-[minmax(460px,1fr)_360px]">
       <section className="flex flex-col gap-3 overflow-auto p-4">
         {(uploadError ?? error) && <Banner tone="error">{uploadError ?? error}</Banner>}
+        <MasterVolume value={state.master} knob={state.masterKnob} call={call} />
         <Board state={state} call={call} selected={selected} onSelect={setSelected} uploads={uploads} upload={upload} />
         <div>
           <Button variant={anyPlaying ? "stop" : "outline"} disabled={!anyPlaying} onClick={() => call("stopAll")}>
@@ -64,6 +66,43 @@ export function App() {
           <p className="text-muted">Sélectionne un pad pour lui donner un son, ou glisse un fichier audio dessus.</p>
         )}
       </section>
+    </div>
+  );
+}
+
+// --- volume général ------------------------------------------------------------------------
+
+/** Curseur du volume général (0..200 %), aussi réglé au potar ; s'applique aux sons en cours. */
+function MasterVolume({ value, knob, call }: { value: number; knob: string; call: Call }) {
+  const [local, setLocal] = useState(value);
+  const timer = useRef<number | undefined>(undefined);
+  const editing = useRef(false);
+
+  useEffect(() => {
+    if (!editing.current) setLocal(value); // potar, autre page ouverte…
+  }, [value]);
+
+  return (
+    <div className="flex max-w-[672px] items-center gap-4 rounded-xl bg-surface-2 px-3.5 py-2.5">
+      <div className="flex-1">
+        <Slider
+          label={<>Volume général <span className="text-xs text-muted">· potar : {knob}</span></>}
+          display={`${local} %`}
+          value={local}
+          min={0}
+          max={MAX_VOLUME}
+          step={1}
+          onChange={(v) => {
+            setLocal(v);
+            editing.current = true;
+            window.clearTimeout(timer.current);
+            timer.current = window.setTimeout(async () => {
+              await call("master", { volume: v });
+              editing.current = false;
+            }, 60);
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -153,7 +192,7 @@ function Board({
               className={cx(
                 "group relative flex aspect-square cursor-pointer items-center justify-center overflow-hidden rounded-[10px] border border-line p-1.5 text-center text-[11px] font-semibold select-none",
                 !sound && "bg-pad-off text-muted",
-                sound?.playing && PLAYING_ANIM,
+                sound?.playing && (sound.paused ? "animate-blink-led" : PLAYING_ANIM),
                 selected && sameSlot(selected, slot) && "outline-2 outline-white",
                 ((drag.target && sameSlot(drag.target, slot)) || (fileTarget && sameSlot(fileTarget, slot))) && "outline-3 outline-accent",
               )}
@@ -162,15 +201,23 @@ function Board({
             >
               {sound ? sound.name : <span className="opacity-0 group-hover:opacity-60">+</span>}
               {sound && !sound.hasFile && <span className="absolute inset-x-0 bottom-1 text-[9px]">⚠ aucun fichier</span>}
-              {sound?.playing && <span className="absolute inset-x-0 bottom-1 text-[9px]">▶ en cours</span>}
+              {sound?.playing && (
+                <span className="absolute inset-x-0 bottom-1 text-[9px]">{sound.paused ? "⏸ en pause" : "▶ en cours"}</span>
+              )}
               {sound?.hasFile && (
-                <span
-                  className="absolute top-0.5 right-1.5 text-[11px] opacity-0 group-hover:opacity-80"
-                  title={sound.playing ? "Arrêter" : "Jouer"}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={() => call("play", slot)}
-                >
-                  {sound.playing ? "■" : "▶"}
+                <span className="absolute top-0.5 right-1.5 flex gap-1.5 text-[11px] opacity-0 group-hover:opacity-80">
+                  {sound.playing && (
+                    <span title="Arrêter" onMouseDown={(e) => e.stopPropagation()} onClick={() => call("stop", slot)}>
+                      ■
+                    </span>
+                  )}
+                  <span
+                    title={!sound.playing ? "Jouer" : sound.paused ? "Reprendre" : "Pause"}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => call("play", slot)}
+                  >
+                    {sound.playing && !sound.paused ? "⏸" : "▶"}
+                  </span>
                 </span>
               )}
               {progress !== undefined && (
@@ -184,7 +231,7 @@ function Board({
       </div>
       <p className="text-xs text-muted">
         Clic = modifier le pad · glisse un pad pour le déplacer (échange si occupé) · glisse un fichier audio sur un pad pour lui
-        donner ce son.
+        donner ce son. Sur l'APC : appui = lecture, puis appui court = pause / reprise, appui long = arrêt.
       </p>
     </div>
   );
@@ -237,7 +284,7 @@ function usePadDrag(call: Call, onSelect: (slot: Slot) => void) {
 
 // --- éditeur ----------------------------------------------------------------------------------
 
-type Draft = Pick<Sound, "name" | "color" | "volume">;
+type Draft = Pick<Sound, "name" | "color" | "volume" | "start" | "end">;
 
 function Editor({
   slot,
@@ -252,7 +299,13 @@ function Editor({
   progress: number | undefined;
   upload: (file: File, slot: Slot) => Promise<void>;
 }) {
-  const [draft, setDraft] = useState<Draft>(() => ({ name: sound?.name ?? "", color: sound?.color ?? 45, volume: sound?.volume ?? 100 }));
+  const [draft, setDraft] = useState<Draft>(() => ({
+    name: sound?.name ?? "",
+    color: sound?.color ?? 45,
+    volume: sound?.volume ?? 100,
+    start: sound?.start ?? 0,
+    end: sound?.end ?? 0,
+  }));
   const fileInput = useRef<HTMLInputElement>(null);
   const save = useDebouncedSave(call, slot);
 
@@ -313,7 +366,30 @@ function Editor({
               </Button>
             </div>
           </div>
-          <Slider label="Volume" display={`${draft.volume} %`} value={draft.volume} min={0} max={100} step={1} onChange={(v) => change({ volume: v }, 250)} />
+          {sound.hasFile && (
+            <div className="flex flex-col gap-1.5 text-[13px]">
+              <span>Plage jouée</span>
+              <Trim
+                slot={slot}
+                soundId={sound.id}
+                start={draft.start}
+                end={draft.end}
+                playing={sound.playing}
+                paused={sound.paused}
+                color={padHex(draft.color)}
+                onChange={(range, delay) => change(range, delay)}
+              />
+            </div>
+          )}
+          <Slider
+            label="Volume"
+            display={`${draft.volume} %`}
+            value={draft.volume}
+            min={0}
+            max={MAX_VOLUME}
+            step={1}
+            onChange={(v) => change({ volume: v }, 120)}
+          />
           <div className="flex flex-col gap-1.5 text-[13px]">
             <span>Couleur <span className="text-xs text-muted">· index {draft.color}</span></span>
             <div className="grid grid-cols-16 gap-[3px]">
@@ -331,15 +407,16 @@ function Editor({
           </div>
           <div className="flex items-center gap-2">
             <Button
-              variant={sound.playing ? "stop" : "outline"}
+              variant={sound.playing && !sound.paused ? "stop" : "outline"}
               disabled={!sound.hasFile}
               onClick={async () => {
                 await save.flush();
                 void call("play", slot);
               }}
             >
-              {sound.playing ? "■ Arrêter" : "▶ Jouer"}
+              {!sound.playing ? "▶ Jouer" : sound.paused ? "▶ Reprendre" : "⏸ Pause"}
             </Button>
+            {sound.playing && <Button onClick={() => call("stop", slot)}>■ Arrêter</Button>}
             <Button
               variant="danger"
               onClick={async () => {

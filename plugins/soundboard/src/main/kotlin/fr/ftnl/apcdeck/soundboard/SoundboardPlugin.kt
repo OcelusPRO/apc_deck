@@ -4,8 +4,12 @@ import fr.ftnl.apcdeck.api.ApcEvent
 import fr.ftnl.apcdeck.api.ApcPlugin
 import fr.ftnl.apcdeck.api.Button
 import fr.ftnl.apcdeck.api.ButtonEvent
+import fr.ftnl.apcdeck.api.ConfigSpec
 import fr.ftnl.apcdeck.api.Effect
 import fr.ftnl.apcdeck.api.Grid
+import fr.ftnl.apcdeck.api.InputBinding
+import fr.ftnl.apcdeck.api.InputKind
+import fr.ftnl.apcdeck.api.KnobEvent
 import fr.ftnl.apcdeck.api.LedState
 import fr.ftnl.apcdeck.api.MiniJson
 import fr.ftnl.apcdeck.api.PadColor
@@ -15,6 +19,8 @@ import fr.ftnl.apcdeck.api.double
 import fr.ftnl.apcdeck.api.int
 import fr.ftnl.apcdeck.api.obj
 import fr.ftnl.apcdeck.api.str
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -62,15 +68,20 @@ data class Sound(
     val name: String,
     /** Index de la palette de l'APC (1..127). */
     val color: Int,
-    /** 0..100 %. */
+    /** 0..200 % (au-delà de 100 : amplifié, saturé aux crêtes). */
     val volume: Int,
     /** Nom du fichier d'origine, pour l'affichage. */
     val fileName: String,
-    /** Durée en secondes (0 si inconnue). */
+    /** Durée du fichier en secondes (0 si inconnue). */
     val duration: Double,
+    /** Début de la plage jouée, en secondes. */
+    val start: Double = 0.0,
+    /** Fin de la plage jouée, en secondes ; 0 = jusqu'à la fin du fichier. */
+    val end: Double = 0.0,
 ) {
     fun toJson(): Map<String, Any?> = mapOf(
         "id" to id, "name" to name, "color" to color, "volume" to volume, "fileName" to fileName, "duration" to duration,
+        "start" to start, "end" to end,
     )
 
     companion object {
@@ -78,24 +89,53 @@ data class Sound(
             id = id,
             name = json.str("name")?.trim()?.ifEmpty { null } ?: previous?.name ?: "Sans nom",
             color = (json.int("color") ?: previous?.color ?: PadColor.BLUE.index).coerceIn(1, 127),
-            volume = (json.int("volume") ?: previous?.volume ?: 100).coerceIn(0, 100),
+            volume = (json.int("volume") ?: previous?.volume ?: 100).coerceIn(0, MAX_VOLUME),
             fileName = json.str("fileName") ?: previous?.fileName.orEmpty(),
             duration = json.double("duration") ?: previous?.duration ?: 0.0,
-        )
+        ).let { sound ->
+            val start = (json.double("start") ?: previous?.start ?: 0.0).coerceAtLeast(0.0)
+            val end = json.double("end") ?: previous?.end ?: 0.0
+            sound.copy(start = start, end = if (end > start) end else 0.0)
+        }
+
+        const val MAX_VOLUME = 200
     }
 }
 
 /**
  * Soundboard : un son par pad, sur 40 pages (colonne verte × ligne rouge, comme le pager). Appui = lecture, le pad
- * oscille (pulse) tant que le son joue ; nouvel appui = arrêt. Stop All coupe tous les sons. Tout se règle depuis
- * l'interface web, qui décode les fichiers audio (MP3, OGG, FLAC…) et les envoie en WAV.
+ * oscille (pulse) tant que le son joue ; ensuite appui court = pause (pad clignotant) / reprise, appui long = arrêt.
+ * Stop All coupe tous les sons ; un potar règle le volume général. Tout se règle depuis l'interface web (plage jouée, volume…), qui décode les fichiers audio
+ * (MP3, OGG, FLAC…) et les envoie en WAV.
  */
 class SoundboardPlugin : ApcPlugin() {
+    object Settings : ConfigSpec() {
+        val masterKnob = binding(
+            "masterKnob", "Volume général", default = InputBinding.Knob(0), accepts = setOf(InputKind.KNOB),
+            description = "Potar qui règle le volume de tous les sons",
+        )
+        val longPress = int(
+            "longPress", "Appui long (ms)", default = 500, range = 200..2000,
+            description = "Durée d'appui sur un pad en lecture ou en pause pour arrêter le son (appui court = pause / reprise)",
+        )
+    }
+
+    override val configSpec: ConfigSpec get() = Settings
+
     private val sounds = LinkedHashMap<Slot, Sound>()
     private var page = Page(0, 0)
 
+    /** Volume général, 0..200 %. */
+    private var master = 100
+
+    /** Forme d'onde par id de son (calculée à la demande de l'interface). */
+    private val peaksCache = HashMap<String, Pair<List<Double>, Double>>()
+
     /** Sons en cours de lecture, par id. Confiné au thread principal. */
     private val playing = HashMap<String, SoundPlayer>()
+
+    /** Pads tenus (index physique) sur un son en lecture : id du son et minuterie de l'appui long. */
+    private val holds = HashMap<Int, Pair<String, Job>>()
 
     private val soundsDir: Path get() = ctx.data.directory.resolve("sounds").createDirectories()
     private val uploadsDir: Path get() = ctx.data.directory.resolve(".uploads").createDirectories()
@@ -114,6 +154,7 @@ class SoundboardPlugin : ApcPlugin() {
             }
         }
         ctx.data.getString(KEY_PAGE)?.let(Slot::decode)?.let { page = it.page }
+        master = ctx.data.getInt(KEY_MASTER, 100).coerceIn(0, Sound.MAX_VOLUME)
         // Fichiers orphelins (suppression impossible pendant une lecture) et envois interrompus.
         val used = sounds.values.map { "${it.id}.wav" }.toSet()
         soundsDir.listDirectoryEntries().filter { it.name !in used }.forEach { runCatching { it.deleteIfExists() } }
@@ -128,23 +169,70 @@ class SoundboardPlugin : ApcPlugin() {
 
     override fun onActivate() = redraw()
 
+    /** Le relâchement des pads tenus n'arrivera pas : on oublie ces appuis. */
+    override fun onDeactivate() = cancelHolds()
+
+    override fun onPause() = cancelHolds()
+
+    /** Le potar du volume général a pu changer : son nom est affiché dans l'interface. */
+    override fun onConfigChanged() {
+        ctx.web.emit("state", MiniJson.stringify(state()))
+    }
+
     override fun onEvent(event: ApcEvent) {
         when (event) {
-            is PadEvent -> if (event.pressed) toggle(Slot(page, event.x, event.y))
+            is PadEvent -> pad(event)
             is ButtonEvent -> if (event.pressed) when (event.button.group) {
                 Button.Group.SCENE -> showPage(page.copy(row = event.button.index))
                 Button.Group.TRACK -> showPage(page.copy(col = event.button.index))
                 else -> if (event.button == Button.STOP_ALL) stopAll()
             }
+            is KnobEvent -> if (ctx.config[Settings.masterKnob].matches(event)) setMaster(master + event.delta * 2)
             else -> {}
         }
     }
 
     // --- lecture -----------------------------------------------------------------------
 
-    private fun toggle(slot: Slot) {
+    /**
+     * Son arrêté : lecture dès l'appui. Son en lecture ou en pause : appui court (relâché avant le délai) =
+     * pause / reprise, appui long = arrêt, déclenché sans attendre le relâchement.
+     */
+    private fun pad(event: PadEvent) {
+        if (!event.pressed) {
+            val (id, timer) = holds.remove(event.index) ?: return
+            timer.cancel()
+            return togglePause(id)
+        }
+        val sound = sounds[Slot(page, event.x, event.y)] ?: return
+        if (sound.id !in playing) {
+            play(sound)
+            return changed(save = false)
+        }
+        holds.remove(event.index)?.second?.cancel()
+        holds[event.index] = sound.id to ctx.scope.launch {
+            delay(ctx.config[Settings.longPress].toLong())
+            holds.remove(event.index)
+            stop(sound.id)
+            changed(save = false)
+        }
+    }
+
+    private fun cancelHolds() {
+        holds.values.forEach { it.second.cancel() }
+        holds.clear()
+    }
+
+    /** Interface web : lecture si arrêté, sinon pause / reprise. */
+    private fun playOrPause(slot: Slot) {
         val sound = sounds[slot] ?: return
-        if (sound.id in playing) stop(sound.id) else play(sound)
+        if (sound.id in playing) togglePause(sound.id) else play(sound)
+        changed(save = false)
+    }
+
+    private fun togglePause(id: String) {
+        val player = playing[id] ?: return
+        if (player.paused) player.resume() else player.pause()
         changed(save = false)
     }
 
@@ -152,9 +240,25 @@ class SoundboardPlugin : ApcPlugin() {
         val file = fileOf(sound)
         if (!file.exists()) return ctx.log.warn("« ${sound.name} » : aucun fichier audio")
         lateinit var player: SoundPlayer
-        player = SoundPlayer(file, sound.volume / 100.0) { error -> ctx.scope.launch { finished(sound, player, error) } }
+        player = SoundPlayer(file, gainOf(sound), sound.start, sound.end) { error -> ctx.scope.launch { finished(sound, player, error) } }
         playing[sound.id] = player
         player.start()
+    }
+
+    private fun gainOf(sound: Sound): Double = sound.volume / 100.0 * master / 100.0
+
+    /** Le volume s'applique aussi aux sons déjà en cours de lecture. */
+    private fun updateGains() {
+        sounds.values.forEach { sound -> playing[sound.id]?.gain = gainOf(sound) }
+    }
+
+    private fun setMaster(volume: Int) {
+        val next = volume.coerceIn(0, Sound.MAX_VOLUME)
+        if (next == master) return
+        master = next
+        ctx.data.putInt(KEY_MASTER, master)
+        updateGains()
+        ctx.web.emit("state", MiniJson.stringify(state()))
     }
 
     private fun stop(id: String) {
@@ -184,7 +288,12 @@ class SoundboardPlugin : ApcPlugin() {
         leds.clear()
         sounds.forEach { (slot, sound) ->
             if (slot.page != page) return@forEach
-            leds.pad(slot.x, slot.y, PadColor(sound.color), if (sound.id in playing) Effect.PULSE_1_8 else Effect.SOLID)
+            val effect = when (playing[sound.id]?.paused) {
+                null -> Effect.SOLID
+                false -> Effect.PULSE_1_8
+                true -> Effect.BLINK_1_4
+            }
+            leds.pad(slot.x, slot.y, PadColor(sound.color), effect)
         }
         repeat(Page.ROWS) { leds.button(Button.scene(it), if (it == page.row) LedState.ON else LedState.OFF) }
         repeat(Page.COLS) { leds.button(Button.track(it), if (it == page.col) LedState.ON else LedState.OFF) }
@@ -203,9 +312,20 @@ class SoundboardPlugin : ApcPlugin() {
         when (action) {
             "state" -> {}
             "page" -> json.int("row")?.let { r -> json.int("col")?.let { c -> showPage(Page(r.coerceIn(0, 4), c.coerceIn(0, 7))) } }
-            "save" -> Slot.fromJson(json)?.let { slot -> sounds[slot] = Sound.fromJson(json, sounds[slot]?.id ?: newId(), sounds[slot]); changed() }
+            "save" -> Slot.fromJson(json)?.let { slot ->
+                sounds[slot] = Sound.fromJson(json, sounds[slot]?.id ?: newId(), sounds[slot])
+                updateGains()
+                changed()
+            }
+            "master" -> json.int("volume")?.let(::setMaster)
+            "peaks" -> {
+                val sound = Slot.fromJson(json)?.let(sounds::get)?.takeIf { fileOf(it).exists() } ?: return null
+                val (peaks, duration) = peaksCache.getOrPut(sound.id) { SoundPlayer.peaks(fileOf(sound), PEAKS) }
+                return MiniJson.stringify(mapOf("id" to sound.id, "peaks" to peaks, "duration" to duration))
+            }
             "delete" -> Slot.fromJson(json)?.let(::delete)
-            "play" -> Slot.fromJson(json)?.let(::toggle)
+            "play" -> Slot.fromJson(json)?.let(::playOrPause)
+            "stop" -> Slot.fromJson(json)?.let(sounds::get)?.let { stop(it.id); changed(save = false) }
             "stopAll" -> stopAll()
             "upload" -> upload(json)
             "move" -> {
@@ -244,7 +364,10 @@ class SoundboardPlugin : ApcPlugin() {
         val previous = sounds[slot]
         // Nouvel id (donc nouveau fichier) : l'ancien fichier peut encore être ouvert par une lecture qui s'arrête.
         val sound = Sound.fromJson(
-            mapOf("fileName" to fileName, "duration" to json.double("duration"), "name" to (previous?.name ?: fileName.substringBeforeLast('.'))),
+            mapOf(
+                "fileName" to fileName, "duration" to json.double("duration"), "start" to 0.0, "end" to 0.0,
+                "name" to (previous?.name ?: fileName.substringBeforeLast('.')),
+            ),
             newId(), previous,
         )
         part.moveTo(fileOf(sound), StandardCopyOption.REPLACE_EXISTING)
@@ -264,6 +387,7 @@ class SoundboardPlugin : ApcPlugin() {
 
     /** Sous Windows, un fichier encore ouvert par une lecture qui s'arrête ne peut pas être supprimé : fait au prochain chargement. */
     private fun deleteFile(sound: Sound) {
+        peaksCache.remove(sound.id)
         runCatching { fileOf(sound).deleteIfExists() }
     }
 
@@ -274,8 +398,10 @@ class SoundboardPlugin : ApcPlugin() {
 
     private fun state(): Map<String, Any?> = mapOf(
         "current" to mapOf("row" to page.row, "col" to page.col),
+        "master" to master,
+        "masterKnob" to ctx.config[Settings.masterKnob].label,
         "sounds" to sounds.map { (slot, sound) ->
-            sound.toJson() + slot.toJson() + mapOf("playing" to (sound.id in playing), "hasFile" to fileOf(sound).exists())
+            sound.toJson() + slot.toJson() + mapOf("playing" to (sound.id in playing), "paused" to (playing[sound.id]?.paused == true), "hasFile" to fileOf(sound).exists())
         },
     )
 
@@ -289,5 +415,7 @@ class SoundboardPlugin : ApcPlugin() {
     private companion object {
         const val KEY_SOUNDS = "sounds"
         const val KEY_PAGE = "page"
+        const val KEY_MASTER = "master"
+        const val PEAKS = 800
     }
 }

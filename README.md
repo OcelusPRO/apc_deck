@@ -11,6 +11,8 @@ notification) et son interface s'ouvre dans le navigateur par défaut.
 | `core` | Moteur : MIDI, routage, chargement des jars, serveur web local, interface (`src/main/resources/ui`) |
 | `app` | Point d'entrée, icône de notification, packaging |
 | `plugins/macros` | Plugin Macros (scripts shell sur les pads), livré avec l'application |
+| `plugins/synth` | Plugin Synthé (synthé polyphonique joué au clavier), livré avec l'application |
+| `plugins/soundboard` | Plugin Soundboard (un son par pad, sur 40 pages), livré avec l'application |
 
 ## Développement
 
@@ -33,7 +35,7 @@ rien à installer pour l'utilisateur). Résultats dans `app/build/dist/`.
 
 Configuration et données (dossier créé au premier lancement) : `%APPDATA%\.APC_Deck` (Windows),
 `~/Library/Application Support/.APC_Deck` (macOS), `~/.config/.APC_Deck` (Linux). Au premier lancement d'une
-version packagée, les plugins livrés (Macros) y sont copiés dans `plugins/`.
+version packagée, les plugins livrés (Macros, Synthé, Soundboard) y sont copiés dans `plugins/`.
 
 ## Releases et mises à jour
 
@@ -58,6 +60,6 @@ version packagée, les plugins livrés (Macros) y sont copiés dans `plugins/`.
   - `"updateUrl": "https://…/mon-plugin.jar"` : adresse directe du jar. Il n'est retéléchargé que s'il a changé
     (ETag / Last-Modified) et la mise à jour est proposée dès que son contenu diffère du jar installé, même sans
     changement de version (jamais vers une version plus ancienne).
-- **Plugins officiels** (Macros, Synthé) : même numéro de version que l'application (`"version": "${version}"` dans
+- **Plugins officiels** (Macros, Synthé, Soundboard) : même numéro de version que l'application (`"version": "${version}"` dans
   leur `plugin.json`, remplacé au build par `appVersion`), joints à chaque release sous le nom `<id>.jar`
   (`./gradlew :app:packagePlugins`) et mis à jour avec elle.

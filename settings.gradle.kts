@@ -29,5 +29,6 @@ include(":core")
 include(":app")
 include(":plugins:macros")
 include(":plugins:synth")
+include(":plugins:soundboard")
 
 rootProject.name = "MIDI_streamdeck"

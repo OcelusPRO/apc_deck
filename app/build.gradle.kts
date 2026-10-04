@@ -22,6 +22,7 @@ dependencies {
     implementation(project(":core"))
     bundledPlugins(project(":plugins:macros"))
     bundledPlugins(project(":plugins:synth"))
+    bundledPlugins(project(":plugins:soundboard"))
 }
 
 application {

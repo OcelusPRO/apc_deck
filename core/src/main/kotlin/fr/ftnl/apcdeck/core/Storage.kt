@@ -44,6 +44,8 @@ data class Settings(
     val uiPort: Int = 47800,
     /** Jeton de l'adresse de l'interface, généré au premier lancement. */
     val uiToken: String = "",
+    /** APC virtuel (l'interface remplace l'appareil) tant qu'aucun APC réel n'est branché. */
+    val virtualApc: Boolean = false,
 )
 
 /**

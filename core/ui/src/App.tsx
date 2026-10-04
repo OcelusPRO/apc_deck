@@ -28,14 +28,14 @@ export function App() {
   return (
     <JarDropZone>
       <div className="flex h-full flex-col">
-        <TopBar state={state} />
+        <TopBar state={state} onVirtual={() => select(DEVICE)} />
         {state.update && <UpdateBanner update={state.update} />}
         {state.update && state.update.plugins.length > 0 && <PluginUpdatesBanner plugins={state.update.plugins} />}
         <div className={cx("grid min-h-0 flex-1", showConfig ? "grid-cols-[300px_minmax(0,1fr)_360px]" : "grid-cols-[300px_minmax(0,1fr)]")}>
           <Sidebar plugins={state.plugins} selected={selected} onSelect={select} />
           <main className="relative min-h-0 min-w-0 overflow-auto">
             {!plugin ? (
-              <ApcView state={state} />
+              <ApcView state={state} virtual={!!state.device.virtual} />
             ) : plugin.manager && state.pager ? (
               <PagerEditor pager={state.pager} plugins={state.plugins} />
             ) : plugin.webUrl ? (
@@ -58,15 +58,32 @@ export function App() {
   );
 }
 
-function TopBar({ state }: { state: ReturnType<typeof useAppState> }) {
+function TopBar({ state, onVirtual }: { state: ReturnType<typeof useAppState>; onVirtual: () => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const { connected, detail, virtual } = state.device;
+  const virtualOn = !!state.settings?.virtual;
   return (
     <header className="flex flex-none items-center gap-3 border-b border-line px-4 py-2.5">
       <h1 className="m-0 text-xl font-bold">APC Deck</h1>
-      <span className={cx("h-2.5 w-2.5 rounded-full", state.device.connected ? "bg-ok" : "bg-ko")} />
-      <span className="min-w-0 flex-1 truncate text-xs" title={state.device.detail}>
-        {state.device.connected ? "APC connecté" : state.device.detail}
+      <span className={cx("h-2.5 w-2.5 rounded-full", connected ? "bg-ok" : virtual ? "bg-accent" : "bg-ko")} />
+      <span className="min-w-0 flex-1 truncate text-xs" title={detail}>
+        {connected ? "APC connecté" : virtual ? "APC virtuel (aucun APC branché)" : detail}
       </span>
+      {/* Proposé quand aucun APC n'est branché ; reste visible tant qu'il est activé, pour pouvoir le couper. */}
+      {state.settings && (!connected || virtualOn) && (
+        <Button
+          variant={virtualOn ? "primary" : "outline"}
+          title={virtualOn
+            ? "Couper l'APC virtuel"
+            : "Utiliser l'interface comme APC (souris, tactile, clavier de l'ordinateur) tant qu'aucun APC n'est branché"}
+          onClick={() => {
+            void cmd("virtual", { enabled: !virtualOn });
+            if (!virtualOn) onVirtual();
+          }}
+        >
+          {virtualOn ? "APC virtuel : activé" : "APC virtuel"}
+        </Button>
+      )}
       {state.settings && (
         <label className="flex items-center gap-1.5 text-[13px]">
           Mode

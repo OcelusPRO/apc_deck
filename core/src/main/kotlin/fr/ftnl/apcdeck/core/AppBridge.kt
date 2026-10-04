@@ -112,6 +112,7 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
 
         when (name) {
             "reconnect" -> engine.reconnect()
+            "virtual" -> engine.setVirtual(bool("enabled"))
             "mode" -> DeviceMode.valueOf(str("mode")).let {
                 engine.setDeviceMode(it, if (it == DeviceMode.GENERIC) KnobMode.ABSOLUTE else KnobMode.RELATIVE)
             }
@@ -285,11 +286,13 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
     private fun deviceJson(d: DeviceStatus) = buildJsonObject {
         put("connected", d.connected)
         put("detail", d.detail)
+        put("virtual", d.virtual)
     }
 
     private fun settingsJson(s: Settings) = buildJsonObject {
         put("mode", s.mode.name)
         put("knobs", s.knobs.name)
+        put("virtual", s.virtualApc)
         putJsonArray("modes") { DeviceMode.entries.forEach { add(JsonPrimitive(it.name)) } }
     }
 

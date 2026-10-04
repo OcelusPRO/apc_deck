@@ -140,19 +140,3 @@ export function useAppState(): AppState {
   }, []);
   return state;
 }
-
-/** Appui puis relâchement (comme un vrai bouton) : (true) au clic, (false) au relâchement de la souris. */
-export function pressHandlers(onPress: (down: boolean) => void) {
-  return {
-    onMouseDown: (e: { button: number; preventDefault: () => void }) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      onPress(true);
-      const up = () => {
-        onPress(false);
-        window.removeEventListener("mouseup", up);
-      };
-      window.addEventListener("mouseup", up);
-    },
-  };
-}

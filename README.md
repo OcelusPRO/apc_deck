@@ -14,6 +14,15 @@ notification) et son interface s'ouvre dans le navigateur par défaut.
 | `plugins/synth` | Plugin Synthé (synthé polyphonique joué au clavier), livré avec l'application |
 | `plugins/soundboard` | Plugin Soundboard (un son par pad, sur 40 pages), livré avec l'application |
 
+## APC virtuel
+
+Sans APC branché, le bouton **APC virtuel** de la barre du haut transforme la vue de l'appareil en APC jouable :
+pads, boutons et touches system à la souris ou au doigt (multi-touch), potars à la molette ou en glissant
+verticalement, clavier de 25 touches avec octaves. Le clavier de l'ordinateur joue aussi les notes (positions
+physiques : rangée du milieu pour les touches blanches, rangée du dessus pour les dièses, `W` / `X` en AZERTY pour
+l'octave). Les plugins reçoivent les mêmes événements qu'avec l'appareil. Le réglage est conservé ; dès qu'un APC
+réel est branché il reprend la main, et l'APC virtuel revient s'il est débranché.
+
 ## Développement
 
 ```bash

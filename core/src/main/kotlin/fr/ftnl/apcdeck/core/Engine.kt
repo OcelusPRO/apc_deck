@@ -51,7 +51,8 @@ import kotlin.io.path.deleteIfExists
 import kotlin.io.path.extension
 import kotlin.io.path.name
 
-data class DeviceStatus(val connected: Boolean, val detail: String)
+/** [virtual] : l'APC virtuel de l'interface fait office d'appareil (activé, et aucun APC réel branché). */
+data class DeviceStatus(val connected: Boolean, val detail: String, val virtual: Boolean = false)
 
 data class LearnState(val pluginId: String, val fieldKey: String)
 
@@ -122,7 +123,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
 
     private val _plugins = MutableStateFlow<List<PluginView>>(emptyList())
     val plugins: StateFlow<List<PluginView>> = _plugins
-    private val _device = MutableStateFlow(DeviceStatus(false, "non connecté"))
+    private val _device = MutableStateFlow(DeviceStatus(false, "non connecté", settings.virtualApc))
     val deviceStatus: StateFlow<DeviceStatus> = _device
     private val _settings = MutableStateFlow(settings)
     val settingsState: StateFlow<Settings> = _settings
@@ -212,8 +213,17 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
         connect()
     }
 
-    /** Simule un événement (pads cliqués dans l'interface). */
+    /** Simule un événement (pads cliqués dans l'interface, APC virtuel). */
     fun simulate(event: ApcEvent) = post { dispatch(event) }
+
+    /** Active ou coupe l'APC virtuel ; un APC réel branché reste prioritaire. */
+    fun setVirtual(enabled: Boolean) = post {
+        if (settings.virtualApc == enabled) return@post
+        updateSettings { it.copy(virtualApc = enabled) }
+        setDeviceStatus(_device.value.connected, _device.value.detail)
+        if (enabled && !device.isOpen) log.info("APC virtuel activé : l'interface remplace l'appareil")
+        else if (!enabled) log.info("APC virtuel désactivé")
+    }
 
     fun install(jar: Path, deleteAfter: Boolean = false) = post {
         try {
@@ -273,8 +283,9 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
             surface.flush(device.takeIf { it.isOpen })
         } catch (t: Throwable) {
             device.close()
-            _device.value = DeviceStatus(false, "connexion perdue : ${t.message}")
+            setDeviceStatus(false, "connexion perdue : ${t.message}")
             log.warn("APC déconnecté (${t.message})")
+            if (settings.virtualApc) log.info("APC virtuel : l'interface reprend la main")
         }
     }
 
@@ -284,14 +295,19 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
             val detail = device.open(settings.mode)
             surface.invalidate()
             lastConnectError = null
-            _device.value = DeviceStatus(true, detail)
+            setDeviceStatus(true, detail)
             log.info("APC connecté : $detail")
+            if (settings.virtualApc) log.info("APC réel branché : il remplace l'APC virtuel")
         } catch (t: Throwable) {
             val message = t.message ?: t::class.simpleName ?: "erreur"
-            _device.value = DeviceStatus(false, message)
+            setDeviceStatus(false, message)
             if (message != lastConnectError) log.warn("APC indisponible : $message")
             lastConnectError = message
         }
+    }
+
+    private fun setDeviceStatus(connected: Boolean, detail: String) {
+        _device.value = DeviceStatus(connected, detail, virtual = settings.virtualApc && !connected)
     }
 
     private fun tick() {

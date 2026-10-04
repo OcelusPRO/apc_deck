@@ -94,8 +94,10 @@ export interface Update {
 
 export interface AppState {
   plugins: PluginView[];
-  device: { connected: boolean; detail: string };
-  settings: { mode: string; knobs: string; modes: string[] } | null;
+  /** virtual : l'APC virtuel remplace l'appareil (activé, et aucun APC réel branché). */
+  device: { connected: boolean; detail: string; virtual?: boolean };
+  /** virtual : APC virtuel activé (réglage, même quand un APC réel est branché). */
+  settings: { mode: string; knobs: string; virtual?: boolean; modes: string[] } | null;
   leds: Leds | null;
   input: Input | null;
   learning: { pluginId: string; fieldKey: string } | null;

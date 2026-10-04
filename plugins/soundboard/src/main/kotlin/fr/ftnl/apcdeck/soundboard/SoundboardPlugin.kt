@@ -137,6 +137,14 @@ class SoundboardPlugin : ApcPlugin() {
     /** Pads tenus (index physique) sur un son en lecture : id du son et minuterie de l'appui long. */
     private val holds = HashMap<Int, Pair<String, Job>>()
 
+    /** Écoute depuis l'éditeur de l'interface : un seul à la fois, sans effet sur les pads. */
+    private var preview: SoundPlayer? = null
+    private var previewInfo: Map<String, Any?> = emptyMap()
+    private var previewVolume = 100
+
+    /** Numéro de l'écoute, incrémenté à chaque lancement (l'interface y recale son curseur). */
+    private var previewRun = 0
+
     private val soundsDir: Path get() = ctx.data.directory.resolve("sounds").createDirectories()
     private val uploadsDir: Path get() = ctx.data.directory.resolve(".uploads").createDirectories()
 
@@ -165,6 +173,7 @@ class SoundboardPlugin : ApcPlugin() {
     override fun onUnload() {
         playing.values.forEach(SoundPlayer::stop)
         playing.clear()
+        preview?.stop()
     }
 
     override fun onActivate() = redraw()
@@ -247,9 +256,10 @@ class SoundboardPlugin : ApcPlugin() {
 
     private fun gainOf(sound: Sound): Double = sound.volume / 100.0 * master / 100.0
 
-    /** Le volume s'applique aussi aux sons déjà en cours de lecture. */
+    /** Le volume s'applique aussi aux sons déjà en cours de lecture (et à l'écoute de l'éditeur). */
     private fun updateGains() {
         sounds.values.forEach { sound -> playing[sound.id]?.gain = gainOf(sound) }
+        preview?.gain = previewVolume / 100.0 * master / 100.0
     }
 
     private fun setMaster(volume: Int) {
@@ -280,6 +290,39 @@ class SoundboardPlugin : ApcPlugin() {
             changed(save = false)
         }
     }
+
+    // --- écoute depuis l'éditeur ----------------------------------------------------------
+
+    /** Joue [from]..[to] (secondes, `to` <= 0 = jusqu'à la fin) du fichier de [sound], au volume [volume] (brouillon). */
+    private fun startPreview(sound: Sound, from: Double, to: Double, volume: Int) {
+        val file = fileOf(sound)
+        if (!file.exists()) return
+        preview?.stop()
+        previewVolume = volume.coerceIn(0, Sound.MAX_VOLUME)
+        lateinit var player: SoundPlayer
+        player = SoundPlayer(file, previewVolume / 100.0 * master / 100.0, from, to) { error ->
+            ctx.scope.launch {
+                if (error != null) ctx.log.error("« ${sound.name} » : écoute impossible", error)
+                if (preview === player) stopPreview()
+            }
+        }
+        preview = player
+        previewInfo = mapOf("id" to sound.id, "from" to from, "to" to to, "run" to ++previewRun)
+        player.start()
+        emitPreview()
+    }
+
+    private fun stopPreview() {
+        preview?.stop()
+        preview = null
+        previewInfo = emptyMap()
+        emitPreview()
+    }
+
+    private fun previewState(): Map<String, Any?> =
+        previewInfo + mapOf("playing" to (preview != null), "paused" to (preview?.paused == true))
+
+    private fun emitPreview() = ctx.web.emit("preview", MiniJson.stringify(previewState()))
 
     // --- LED ---------------------------------------------------------------------------
 
@@ -312,16 +355,34 @@ class SoundboardPlugin : ApcPlugin() {
         when (action) {
             "state" -> {}
             "page" -> json.int("row")?.let { r -> json.int("col")?.let { c -> showPage(Page(r.coerceIn(0, 4), c.coerceIn(0, 7))) } }
-            "save" -> Slot.fromJson(json)?.let { slot ->
-                sounds[slot] = Sound.fromJson(json, sounds[slot]?.id ?: newId(), sounds[slot])
-                updateGains()
-                changed()
-            }
+            "save" -> Slot.fromJson(json)?.let { slot -> save(slot, json) }
             "master" -> json.int("volume")?.let(::setMaster)
             "peaks" -> {
                 val sound = Slot.fromJson(json)?.let(sounds::get)?.takeIf { fileOf(it).exists() } ?: return null
-                val (peaks, duration) = peaksCache.getOrPut(sound.id) { SoundPlayer.peaks(fileOf(sound), PEAKS) }
+                val (peaks, duration) = peaksCache.getOrPut(sound.id) {
+                    val count = (SoundPlayer.duration(fileOf(sound)) * PEAKS_PER_SECOND).toInt().coerceIn(MIN_PEAKS, MAX_PEAKS)
+                    SoundPlayer.peaks(fileOf(sound), count)
+                }
                 return MiniJson.stringify(mapOf("id" to sound.id, "peaks" to peaks, "duration" to duration))
+            }
+            "preview" -> {
+                val sound = Slot.fromJson(json)?.let(sounds::get) ?: return null
+                startPreview(sound, json.double("from") ?: 0.0, json.double("to") ?: 0.0, json.int("volume") ?: sound.volume)
+                return MiniJson.stringify(previewState())
+            }
+            "previewPause" -> {
+                preview?.let { if (it.paused) it.resume() else it.pause() }
+                emitPreview()
+                return MiniJson.stringify(previewState())
+            }
+            "previewStop" -> {
+                stopPreview()
+                return MiniJson.stringify(previewState())
+            }
+            "previewVolume" -> {
+                previewVolume = (json.int("volume") ?: previewVolume).coerceIn(0, Sound.MAX_VOLUME)
+                updateGains()
+                return null
             }
             "delete" -> Slot.fromJson(json)?.let(::delete)
             "play" -> Slot.fromJson(json)?.let(::playOrPause)
@@ -377,6 +438,27 @@ class SoundboardPlugin : ApcPlugin() {
         changed()
     }
 
+    /**
+     * Enregistre les réglages de l'éditeur. Si une plage { start, end } est donnée, le fichier est coupé pour de
+     * bon : les parties ignorées sont supprimées (nouveau fichier, nouvel id : l'ancien peut encore être lu).
+     */
+    private fun save(slot: Slot, json: Map<String, Any?>) {
+        val previous = sounds[slot]
+        var sound = Sound.fromJson(json, previous?.id ?: newId(), previous)
+        if (previous != null && (sound.start > 0 || sound.end > 0) && fileOf(previous).exists()) {
+            val cut = sound.copy(id = newId(), start = 0.0, end = 0.0)
+            val duration = SoundPlayer.cut(fileOf(previous), fileOf(cut), sound.start, sound.end)
+            if (previewInfo["id"] == previous.id) stopPreview()
+            stop(previous.id)
+            deleteFile(previous)
+            sound = cut.copy(duration = duration)
+            ctx.log.info("« ${sound.name} » coupé : ${"%.2f".format(duration)} s gardées")
+        }
+        sounds[slot] = sound
+        updateGains()
+        changed()
+    }
+
     private fun delete(slot: Slot) {
         val sound = sounds.remove(slot) ?: return
         stop(sound.id)
@@ -416,6 +498,8 @@ class SoundboardPlugin : ApcPlugin() {
         const val KEY_SOUNDS = "sounds"
         const val KEY_PAGE = "page"
         const val KEY_MASTER = "master"
-        const val PEAKS = 800
+        const val PEAKS_PER_SECOND = 50
+        const val MIN_PEAKS = 1000
+        const val MAX_PEAKS = 30_000
     }
 }

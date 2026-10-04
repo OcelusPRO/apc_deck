@@ -59,8 +59,30 @@ class SoundboardTest {
             val (peaks, duration) = SoundPlayer.peaks(file, 4)
             assertEquals(listOf(0.5, 0.0, 1.0, 0.0), peaks)
             assertEquals(2.0, duration)
+            assertEquals(2.0, SoundPlayer.duration(file))
         } finally {
             Files.deleteIfExists(file)
+        }
+    }
+
+    @Test
+    fun `coupe d'un fichier WAV, seule la plage gardée reste`() {
+        val format = AudioFormat(1000f, 16, 1, true, false)
+        val samples = pcm(*IntArray(1000) { 10_000 }) // 1 s
+        val source = Files.createTempFile("soundboard", ".wav")
+        val target = Files.createTempFile("soundboard-cut", ".wav")
+        try {
+            AudioSystem.write(AudioInputStream(ByteArrayInputStream(samples), format, 1000), AudioFileFormat.Type.WAVE, source.toFile())
+            assertEquals(0.5, SoundPlayer.cut(source, target, 0.25, 0.75))
+            assertEquals(0.5, SoundPlayer.duration(target))
+            val kept = AudioSystem.getAudioInputStream(target.toFile()).use { it.readAllBytes() }
+            assertEquals(1000, kept.size)
+            // Fondu de 5 ms (5 images) aux deux points de coupe, plein volume au milieu.
+            assertEquals(0, kept[0].toInt() or kept[1].toInt())
+            assertContentEquals(pcm(10_000), kept.copyOfRange(500, 502))
+        } finally {
+            Files.deleteIfExists(source)
+            Files.deleteIfExists(target)
         }
     }
 }

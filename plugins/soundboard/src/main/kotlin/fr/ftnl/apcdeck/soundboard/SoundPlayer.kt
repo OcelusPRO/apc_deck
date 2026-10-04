@@ -1,7 +1,9 @@
 package fr.ftnl.apcdeck.soundboard
 
+import java.io.ByteArrayInputStream
 import java.nio.file.Path
 import java.util.concurrent.locks.ReentrantLock
+import javax.sound.sampled.AudioFileFormat
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
@@ -154,6 +156,31 @@ class SoundPlayer(
                 }
             }
         }
+
+        /** Durée du fichier en secondes. */
+        fun duration(file: Path): Double = AudioSystem.getAudioFileFormat(file.toFile()).let { it.frameLength / it.format.frameRate.toDouble() }
+
+        /**
+         * Écrit dans [target] (WAV) la plage [start]..[end] de [source] (secondes, `end` <= 0 = jusqu'à la fin),
+         * avec un court fondu aux points de coupe ; renvoie la durée gardée en secondes.
+         */
+        fun cut(source: Path, target: Path, start: Double, end: Double): Double =
+            toPcm16(AudioSystem.getAudioInputStream(source.toFile())).use { stream ->
+                val format = stream.format
+                val rate = format.sampleRate.toDouble()
+                val total = stream.frameLength
+                val first = (start * rate).toLong().coerceIn(0, total)
+                val last = if (end > 0) (end * rate).toLong().coerceIn(first, total) else total
+                stream.skipNBytes(first * format.frameSize)
+                val bytes = stream.readNBytes(((last - first) * format.frameSize).toInt())
+                val frames = bytes.size / format.frameSize
+                val fade = (rate * FADE_SECONDS).toLong()
+                val fadeIn = if (first > 0) fade else 0
+                val fadeOut = if (last < total) fade else 0
+                applyGain(bytes, frames, format.channels) { i -> min(1.0, min(ramp(i.toLong(), fadeIn), ramp((frames - i).toLong(), fadeOut))) }
+                AudioSystem.write(AudioInputStream(ByteArrayInputStream(bytes), format, frames.toLong()), AudioFileFormat.Type.WAVE, target.toFile())
+                frames / rate
+            }
 
         /**
          * Forme d'onde : [count] pics (max |échantillon| sur toutes les voies, 0..1) répartis sur tout le fichier,

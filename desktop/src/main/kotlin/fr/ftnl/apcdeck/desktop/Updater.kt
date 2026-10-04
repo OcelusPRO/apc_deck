@@ -1,4 +1,11 @@
-package fr.ftnl.apcdeck.core
+package fr.ftnl.apcdeck.desktop
+
+import fr.ftnl.apcdeck.core.PluginUpdate
+import fr.ftnl.apcdeck.core.PluginView
+import fr.ftnl.apcdeck.core.UpdateState
+import fr.ftnl.apcdeck.core.UpdateStatus
+import fr.ftnl.apcdeck.core.Updates
+import fr.ftnl.apcdeck.core.readManifest
 
 import fr.ftnl.apcdeck.api.PluginLogger
 import kotlinx.coroutines.CoroutineScope
@@ -16,41 +23,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
-
-enum class UpdateStatus { DISABLED, IDLE, CHECKING, UP_TO_DATE, AVAILABLE, DOWNLOADING, INSTALLING, ERROR }
-
-/**
- * Plugin dont la source de mise à jour ([fr.ftnl.apcdeck.api.PluginManifest.repository] ou
- * [fr.ftnl.apcdeck.api.PluginManifest.updateUrl]) publie une version plus récente.
- */
-data class PluginUpdate(
-    val id: String,
-    val name: String,
-    val current: String,
-    val latest: String,
-    val pageUrl: String?,
-    /** Ce qui distingue cette mise à jour (version, ou empreinte du jar pour une URL directe) : signalée une fois. */
-    val revision: String = latest,
-    val installing: Boolean = false,
-    val error: String? = null,
-)
-
-data class UpdateState(
-    val current: String?,
-    /** État de l'application elle-même (les plugins sont dans [plugins]). */
-    val status: UpdateStatus,
-    val latest: String? = null,
-    /** Page de la release sur GitHub. */
-    val pageUrl: String? = null,
-    /** Installeur de l'OS courant (null : la release n'en contient pas, il faut passer par la page). */
-    val assetName: String? = null,
-    val notes: String? = null,
-    /** 0..1 pendant le téléchargement. */
-    val progress: Double? = null,
-    val error: String? = null,
-    val checkedAt: Long? = null,
-    val plugins: List<PluginUpdate> = emptyList(),
-)
 
 /**
  * Recherche des mises à jour : releases de l'application ([repo]) et des plugins qui déclarent une source dans leur
@@ -75,7 +47,7 @@ class Updater(
     private val installJar: (Path) -> Unit = {},
     private val repo: String = REPO,
     private val interval: Duration = 6.hours,
-) {
+) : Updates {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val busy = AtomicBoolean(false)
     private val client = ReleaseClient("APCDeck/${current ?: "dev"}")
@@ -83,7 +55,7 @@ class Updater(
     private val pluginSources = ConcurrentHashMap<String, UpdateSource>()
 
     private val _state = MutableStateFlow(UpdateState(current, if (current == null) UpdateStatus.DISABLED else UpdateStatus.IDLE))
-    val state: StateFlow<UpdateState> = _state
+    override val state: StateFlow<UpdateState> = _state
 
     /** Appelé (thread quelconque) quand une version plus récente que celles déjà signalées est trouvée. */
     var onAvailable: (UpdateState) -> Unit = {}
@@ -104,7 +76,7 @@ class Updater(
      * Recherche maintenant et renvoie l'état obtenu (inchangé pendant un téléchargement). [manual] : demandé par
      * l'utilisateur, qui verra le résultat ; [onAvailable] n'est alors pas appelé.
      */
-    fun check(manual: Boolean = false): UpdateState {
+    override fun check(manual: Boolean): UpdateState {
         val current = current ?: return _state.value
         if (!busy.compareAndSet(false, true)) return _state.value
         try {
@@ -189,7 +161,8 @@ class Updater(
             require(manifest.id == p.id) { "$url contient le plugin « ${manifest.id} » au lieu de « ${p.id} »" }
             DirectJar(validators, file, ReleaseClient.sha256(file), manifest.version).also { directJars[url] = it }
         } ?: known ?: return null
-        if (p.jar != null && Files.exists(p.jar) && ReleaseClient.sha256(p.jar) == jar.sha) return null
+        val installed = p.jar
+        if (installed != null && Files.exists(installed) && ReleaseClient.sha256(installed) == jar.sha) return null
         val order = compareVersions(jar.version, p.version)
         if (order < 0) return null
         pluginSources[p.id] = UpdateSource.Local(jar.file)
@@ -204,7 +177,7 @@ class Updater(
     }
 
     /** Télécharge (si besoin) et installe la mise à jour du plugin [id] (sans fermer l'application). Ne bloque pas. */
-    fun installPlugin(id: String) {
+    override fun installPlugin(id: String) {
         val update = _state.value.plugins.firstOrNull { it.id == id } ?: error("aucune mise à jour pour $id")
         val source = pluginSources[id] ?: error("aucune mise à jour pour $id")
         if (update.installing) return
@@ -230,13 +203,13 @@ class Updater(
     }
 
     /** Toutes les mises à jour de plugins en attente. */
-    fun installPlugins() = _state.value.plugins.filter { !it.installing }.forEach { installPlugin(it.id) }
+    override fun installPlugins() = _state.value.plugins.filter { !it.installing }.forEach { installPlugin(it.id) }
 
     private fun setPlugin(id: String, change: (PluginUpdate) -> PluginUpdate) =
         _state.update { s -> s.copy(plugins = s.plugins.map { if (it.id == id) change(it) else it }) }
 
     /** Télécharge l'installeur, le lance et ferme l'application. Ne bloque pas. */
-    fun install() {
+    override fun install() {
         val url = assetUrl ?: error("aucun installeur pour ce système dans la release : passe par la page GitHub")
         if (_state.value.status != UpdateStatus.AVAILABLE) error("aucune mise à jour à installer")
         if (!busy.compareAndSet(false, true)) error("opération déjà en cours")

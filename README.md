@@ -7,9 +7,10 @@ notification) et son interface s'ouvre dans le navigateur par défaut.
 
 | Module | Rôle |
 |---|--- |
-| `api` | API publique des plugins (événements, LED, configuration, données, interface web) |
-| `core` | Moteur : MIDI, routage, chargement des jars, serveur web local, interface (`src/main/resources/ui`) |
-| `app` | Point d'entrée, icône de notification, packaging |
+| `api` | API publique des plugins (événements, LED, configuration, données, interface web, son) |
+| `core` | Moteur commun au PC et à Android : protocole de l'APC, routage, plugins, serveur web local, interface (`ui/`) |
+| `desktop` | Implémentations PC du cœur : MIDI (`javax.sound.midi`), son (`javax.sound.sampled`), jars JVM, mises à jour |
+| `app` | Application PC : point d'entrée, icône de notification, packaging |
 | `plugins/macros` | Plugin Macros (scripts shell sur les pads), livré avec l'application |
 | `plugins/synth` | Plugin Synthé (synthé polyphonique joué au clavier), livré avec l'application |
 | `plugins/soundboard` | Plugin Soundboard (un son par pad, sur 40 pages), livré avec l'application |

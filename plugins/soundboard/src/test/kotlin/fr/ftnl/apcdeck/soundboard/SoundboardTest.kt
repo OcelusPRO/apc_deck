@@ -4,6 +4,7 @@ import fr.ftnl.apcdeck.api.MiniJson
 import fr.ftnl.apcdeck.api.obj
 import java.io.ByteArrayInputStream
 import java.nio.file.Files
+import fr.ftnl.apcdeck.desktop.JavaSound
 import javax.sound.sampled.AudioFileFormat
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioInputStream
@@ -56,10 +57,10 @@ class SoundboardTest {
         val file = Files.createTempFile("soundboard", ".wav")
         try {
             AudioSystem.write(AudioInputStream(ByteArrayInputStream(samples), format, 8), AudioFileFormat.Type.WAVE, file.toFile())
-            val (peaks, duration) = SoundPlayer.peaks(file, 4)
+            val (peaks, duration) = SoundPlayer.peaks(JavaSound, file, 4)
             assertEquals(listOf(0.5, 0.0, 1.0, 0.0), peaks)
             assertEquals(2.0, duration)
-            assertEquals(2.0, SoundPlayer.duration(file))
+            assertEquals(2.0, SoundPlayer.duration(JavaSound, file))
         } finally {
             Files.deleteIfExists(file)
         }
@@ -73,8 +74,8 @@ class SoundboardTest {
         val target = Files.createTempFile("soundboard-cut", ".wav")
         try {
             AudioSystem.write(AudioInputStream(ByteArrayInputStream(samples), format, 1000), AudioFileFormat.Type.WAVE, source.toFile())
-            assertEquals(0.5, SoundPlayer.cut(source, target, 0.25, 0.75))
-            assertEquals(0.5, SoundPlayer.duration(target))
+            assertEquals(0.5, SoundPlayer.cut(JavaSound, source, target, 0.25, 0.75))
+            assertEquals(0.5, SoundPlayer.duration(JavaSound, target))
             val kept = AudioSystem.getAudioInputStream(target.toFile()).use { it.readAllBytes() }
             assertEquals(1000, kept.size)
             // Fondu de 5 ms (5 images) aux deux points de coupe, plein volume au milieu.

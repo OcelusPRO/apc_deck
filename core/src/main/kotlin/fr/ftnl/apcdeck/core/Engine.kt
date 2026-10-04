@@ -2,6 +2,7 @@ package fr.ftnl.apcdeck.core
 
 import fr.ftnl.apcdeck.api.ApcEvent
 import fr.ftnl.apcdeck.api.ApcPlugin
+import fr.ftnl.apcdeck.api.Audio
 import fr.ftnl.apcdeck.api.BindingField
 import fr.ftnl.apcdeck.api.Button
 import fr.ftnl.apcdeck.api.InputBinding
@@ -23,7 +24,6 @@ import fr.ftnl.apcdeck.api.PluginManifest
 import fr.ftnl.apcdeck.api.WebBridge
 import java.util.concurrent.Callable
 import java.security.SecureRandom
-import java.util.HexFormat
 import fr.ftnl.apcdeck.core.builtin.BUILTIN_PLUGINS
 import fr.ftnl.apcdeck.core.device.ApcDevice
 import fr.ftnl.apcdeck.core.device.DeviceMode
@@ -54,6 +54,10 @@ import kotlin.io.path.name
 /** [virtual] : l'APC virtuel de l'interface fait office d'appareil (activé, et aucun APC réel branché). */
 data class DeviceStatus(val connected: Boolean, val detail: String, val virtual: Boolean = false)
 
+/** [bytes] octets aléatoires (générateur cryptographique), en hexadécimal. */
+fun randomHex(bytes: Int): String =
+    ByteArray(bytes).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+
 data class LearnState(val pluginId: String, val fieldKey: String)
 
 /** Ce qui est physiquement enfoncé / la position des potars (pads indexés y * 8 + x). */
@@ -83,6 +87,7 @@ class PluginContextImpl(
     override val isForeground: Boolean get() = engine.foregroundId == handle.id
     override val shift: Boolean get() = engine.shift
     override val host: Host get() = engine.host
+    override val audio: Audio get() = engine.platform.audio
     override val web: WebBridge = object : WebBridge {
         override val available: Boolean get() = handle.hasWeb
         override fun emit(event: String, json: String) = engine.web.emit(handle.id, event, json)
@@ -96,7 +101,11 @@ class PluginContextImpl(
  * Cœur de l'application. Tout l'état est confiné au thread "apc-main" : les méthodes publiques
  * (appelées par l'interface) postent leur travail sur ce thread ; les plugins y sont toujours appelés.
  */
-class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> ApcPlugin>> = BUILTIN_PLUGINS) {
+class Engine(
+    home: Path,
+    val platform: Platform,
+    private val builtins: List<Pair<PluginManifest, PluginSource.Builtin>> = BUILTIN_PLUGINS,
+) {
     private val executor = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "apc-main").apply { isDaemon = true } }
     val dispatcher: CoroutineDispatcher = executor.asCoroutineDispatcher()
 
@@ -107,7 +116,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
         .getOrElse { log.error("apcdeck.json illisible, valeurs par défaut", it); Settings() }
 
     val surface = Surface()
-    private val device = ApcDevice { event -> post { dispatch(event) } }
+    private val device = ApcDevice(platform.midi) { event -> post { dispatch(event) } }
     private val handles = LinkedHashMap<String, PluginHandle>()
     private var lastConnectError: String? = null
     private var lastTick = System.nanoTime()
@@ -142,7 +151,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
     /** Serveur local : interface de l'application et interfaces web des plugins. */
     val web = WebServer(
         token = settings.uiToken.ifBlank {
-            HexFormat.of().formatHex(ByteArray(16).also(SecureRandom()::nextBytes)).also { token ->
+            randomHex(16).also { token ->
                 updateSettings { it.copy(uiToken = token) }
             }
         },
@@ -169,7 +178,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
 
     fun start() {
         post {
-            builtins.forEach { (manifest, factory) -> register(PluginHandle(manifest, PluginSource.Builtin(factory))) }
+            builtins.forEach { (manifest, source) -> register(PluginHandle(manifest, source)) }
             cleanCache(storage)
             listJars(storage).forEach { jar ->
                 runCatching { register(PluginHandle(readManifest(jar), PluginSource.Jar(jar))) }
@@ -454,7 +463,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
     private fun enable(h: PluginHandle) {
         if (h.instance != null) return
         try {
-            val plugin = h.instantiate(storage.cacheDir)
+            val plugin = h.instantiate(platform.pluginLoader, storage.cacheDir)
             h.instance = plugin
             val config = JsonPluginConfig(storage.configFile(h.id), plugin.configSpec)
             val ctx = PluginContextImpl(this, h, config, JsonDataStore(storage.pluginDataDir(h.id)), logs.logger(h.id))

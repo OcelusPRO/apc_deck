@@ -1,25 +1,25 @@
 package fr.ftnl.apcdeck.soundboard
 
-import java.io.ByteArrayInputStream
+import fr.ftnl.apcdeck.api.Audio
+import fr.ftnl.apcdeck.api.AudioOutput
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.locks.ReentrantLock
-import javax.sound.sampled.AudioFileFormat
-import javax.sound.sampled.AudioFormat
-import javax.sound.sampled.AudioInputStream
-import javax.sound.sampled.AudioSystem
-import javax.sound.sampled.SourceDataLine
 import kotlin.concurrent.withLock
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Lit un fichier audio (WAV, AIFF, AU) sur sa propre ligne de la carte son, dans un thread dédié : plusieurs sons
+ * Lit un fichier audio (WAV, AIFF, AU ; plus MP3, OGG… sur Android) sur sa propre sortie [Audio], dans un thread dédié : plusieurs sons
  * peuvent jouer en même temps. Seule la plage [start]..[end] (secondes, `end` <= 0 = jusqu'à la fin) est jouée,
  * avec un court fondu aux points de coupe. [pause] / [resume] figent la lecture sans perdre la position. [onEnd] est appelé depuis ce thread, une seule fois, à la fin du son,
  * après [stop] ou en cas d'erreur (alors non nulle).
  */
 class SoundPlayer(
+    private val audio: Audio,
     private val file: Path,
     gain: Double,
     private val start: Double = 0.0,
@@ -27,7 +27,7 @@ class SoundPlayer(
     private val onEnd: (Throwable?) -> Unit,
 ) {
     @Volatile private var stopped = false
-    @Volatile private var line: SourceDataLine? = null
+    @Volatile private var line: AudioOutput? = null
     private val lock = ReentrantLock()
     private val resumed = lock.newCondition()
 
@@ -77,34 +77,33 @@ class SoundPlayer(
     private fun play() {
         var error: Throwable? = null
         try {
-            toPcm16(AudioSystem.getAudioInputStream(file.toFile())).use { stream ->
-                val format = stream.format
-                val rate = format.sampleRate.toDouble()
+            audio.openFile(file).use { stream ->
+                val frameSize = stream.frameSize
+                val rate = stream.sampleRate.toDouble()
                 val total = stream.frameLength.takeIf { it >= 0 } ?: Long.MAX_VALUE
                 val first = (start * rate).toLong().coerceIn(0, total)
                 val last = if (end > 0) (end * rate).toLong().coerceIn(first, total) else total
                 val fade = (rate * FADE_SECONDS).toLong()
-                stream.skipNBytes(first * format.frameSize)
+                stream.skipFrames(first)
 
-                val out = AudioSystem.getSourceDataLine(format)
-                out.open(format, format.frameSize * (format.sampleRate / 10).toInt()) // ~100 ms de tampon
+                val out = audio.openOutput(stream.sampleRate, stream.channels, stream.sampleRate / 10) // ~100 ms de tampon
                 line = out
                 try {
                     if (stopped) return@use
                     lock.withLock { if (!paused) out.start() } // mis en pause avant même de démarrer
-                    val buffer = ByteArray(format.frameSize * 2048)
+                    val buffer = ByteArray(frameSize * 2048)
                     var frame = first
                     while (!stopped && frame < last) {
                         awaitResume()
-                        val wanted = min(buffer.size.toLong(), (last - frame) * format.frameSize).toInt()
-                        val read = stream.readNBytes(buffer, 0, wanted).let { it - it % format.frameSize }
+                        val wanted = min(buffer.size.toLong(), (last - frame) * frameSize).toInt()
+                        val read = stream.readFully(buffer, 0, wanted).let { it - it % frameSize }
                         if (read <= 0) break
-                        val frames = read / format.frameSize
+                        val frames = read / frameSize
                         // Fondus seulement aux points de coupe (pas au début ni à la fin réels du fichier).
                         val fadeIn = if (first > 0) fade else 0
                         val fadeOut = if (last < total) fade else 0
                         val g = gain
-                        applyGain(buffer, frames, format.channels) { i ->
+                        applyGain(buffer, frames, stream.channels) { i ->
                             val f = frame + i
                             g * min(1.0, min(ramp(f - first, fadeIn), ramp(last - f, fadeOut)))
                         }
@@ -118,7 +117,6 @@ class SoundPlayer(
                         if (!paused) break
                     }
                 } finally {
-                    out.stop()
                     out.close()
                 }
             }
@@ -133,14 +131,6 @@ class SoundPlayer(
         const val FADE_SECONDS = 0.005
 
         private fun ramp(distance: Long, length: Long): Double = if (length <= 0) 1.0 else max(0.0, distance.toDouble() / length)
-
-        /** Convertit si besoin en PCM 16 bits signé little-endian (le format que [applyGain] sait traiter). */
-        fun toPcm16(source: AudioInputStream): AudioInputStream {
-            val f = source.format
-            if (f.encoding == AudioFormat.Encoding.PCM_SIGNED && f.sampleSizeInBits == 16 && !f.isBigEndian) return source
-            val target = AudioFormat(f.sampleRate, 16, f.channels, true, false)
-            return AudioSystem.getAudioInputStream(target, source)
-        }
 
         /** Applique un gain par image (peut dépasser 1 : saturé aux bornes) à du PCM 16 bits little-endian. */
         inline fun applyGain(buffer: ByteArray, frames: Int, channels: Int, gainOf: (frame: Int) -> Double) {
@@ -157,55 +147,101 @@ class SoundPlayer(
             }
         }
 
-        /** Durée du fichier en secondes. */
-        fun duration(file: Path): Double = AudioSystem.getAudioFileFormat(file.toFile()).let { it.frameLength / it.format.frameRate.toDouble() }
+        /** Durée du fichier en secondes (lu en entier si son format ne la donne pas). */
+        fun duration(audio: Audio, file: Path): Double = audio.openFile(file).use { stream ->
+            val frames = stream.frameLength.takeIf { it >= 0 } ?: run {
+                val buffer = ByteArray(stream.frameSize * 8192)
+                var total = 0L
+                while (true) {
+                    val n = stream.read(buffer, 0, buffer.size)
+                    if (n <= 0) break
+                    total += n / stream.frameSize
+                }
+                total
+            }
+            frames / stream.sampleRate.toDouble()
+        }
 
         /**
          * Écrit dans [target] (WAV) la plage [start]..[end] de [source] (secondes, `end` <= 0 = jusqu'à la fin),
          * avec un court fondu aux points de coupe ; renvoie la durée gardée en secondes.
          */
-        fun cut(source: Path, target: Path, start: Double, end: Double): Double =
-            toPcm16(AudioSystem.getAudioInputStream(source.toFile())).use { stream ->
-                val format = stream.format
-                val rate = format.sampleRate.toDouble()
-                val total = stream.frameLength
-                val first = (start * rate).toLong().coerceIn(0, total)
-                val last = if (end > 0) (end * rate).toLong().coerceIn(first, total) else total
-                stream.skipNBytes(first * format.frameSize)
-                val bytes = stream.readNBytes(((last - first) * format.frameSize).toInt())
-                val frames = bytes.size / format.frameSize
+        fun cut(audio: Audio, source: Path, target: Path, start: Double, end: Double): Double =
+            audio.openFile(source).use { stream ->
+                val frameSize = stream.frameSize
+                val rate = stream.sampleRate.toDouble()
+                val first = (start * rate).toLong().coerceAtLeast(0)
+                stream.skipFrames(first)
+                val wanted = if (end > 0) ((end * rate).toLong() - first).coerceAtLeast(0) else Long.MAX_VALUE
+                val bytes = readFrames(stream, wanted)
+                val frames = bytes.size / frameSize
+                val last = first + frames
+                // Coupé avant la fin réelle du fichier ? (longueur inconnue : on regarde s'il reste du son)
+                val more = if (stream.frameLength >= 0) last < stream.frameLength else stream.read(ByteArray(frameSize), 0, frameSize) > 0
                 val fade = (rate * FADE_SECONDS).toLong()
                 val fadeIn = if (first > 0) fade else 0
-                val fadeOut = if (last < total) fade else 0
-                applyGain(bytes, frames, format.channels) { i -> min(1.0, min(ramp(i.toLong(), fadeIn), ramp((frames - i).toLong(), fadeOut))) }
-                AudioSystem.write(AudioInputStream(ByteArrayInputStream(bytes), format, frames.toLong()), AudioFileFormat.Type.WAVE, target.toFile())
+                val fadeOut = if (more) fade else 0
+                applyGain(bytes, frames, stream.channels) { i -> min(1.0, min(ramp(i.toLong(), fadeIn), ramp((frames - i).toLong(), fadeOut))) }
+                writeWav(target, bytes, stream.sampleRate, stream.channels)
                 frames / rate
             }
+
+        /** Lit au plus [maxFrames] images (jusqu'à la fin du fichier). */
+        private fun readFrames(stream: fr.ftnl.apcdeck.api.PcmStream, maxFrames: Long): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(stream.frameSize * 8192)
+            var remaining = maxFrames
+            while (remaining > 0) {
+                val n = stream.read(buffer, 0, min(buffer.size.toLong(), remaining * stream.frameSize).toInt())
+                if (n <= 0) break
+                out.write(buffer, 0, n)
+                remaining -= n / stream.frameSize
+            }
+            return out.toByteArray()
+        }
+
+        /** Fichier WAV PCM 16 bits. */
+        fun writeWav(target: Path, pcm: ByteArray, sampleRate: Int, channels: Int) {
+            val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+                put("RIFF".toByteArray(Charsets.US_ASCII)); putInt(36 + pcm.size); put("WAVE".toByteArray(Charsets.US_ASCII))
+                put("fmt ".toByteArray(Charsets.US_ASCII)); putInt(16); putShort(1); putShort(channels.toShort())
+                putInt(sampleRate); putInt(sampleRate * channels * 2); putShort((channels * 2).toShort()); putShort(16)
+                put("data".toByteArray(Charsets.US_ASCII)); putInt(pcm.size)
+            }
+            Files.newOutputStream(target).use {
+                it.write(header.array())
+                it.write(pcm)
+            }
+        }
 
         /**
          * Forme d'onde : [count] pics (max |échantillon| sur toutes les voies, 0..1) répartis sur tout le fichier,
          * et sa durée en secondes.
          */
-        fun peaks(file: Path, count: Int): Pair<List<Double>, Double> =
-            toPcm16(AudioSystem.getAudioInputStream(file.toFile())).use { stream ->
-                val format = stream.format
-                val frames = stream.frameLength.coerceAtLeast(1)
+        fun peaks(audio: Audio, file: Path, count: Int): Pair<List<Double>, Double> {
+            // Durée inconnue d'avance (certains formats compressés) : une première lecture la mesure.
+            val known = audio.openFile(file).use { it.frameLength }
+            val frames = (known.takeIf { it >= 0 } ?: (duration(audio, file) * audio.openFile(file).use { it.sampleRate }).toLong())
+                .coerceAtLeast(1)
+            return audio.openFile(file).use { stream ->
+                val frameSize = stream.frameSize
                 val peaks = DoubleArray(count)
-                val buffer = ByteArray(format.frameSize * 8192)
+                val buffer = ByteArray(frameSize * 8192)
                 var frame = 0L
                 while (true) {
-                    val read = stream.readNBytes(buffer, 0, buffer.size)
+                    val read = stream.read(buffer, 0, buffer.size)
                     if (read <= 0) break
                     var i = 0
                     while (i + 1 < read) {
                         val sample = abs(((buffer[i].toInt() and 0xFF) or (buffer[i + 1].toInt() shl 8)).toShort().toInt())
-                        val bucket = ((frame + i / format.frameSize) * count / frames).toInt().coerceIn(0, count - 1)
+                        val bucket = ((frame + i / frameSize) * count / frames).toInt().coerceIn(0, count - 1)
                         if (sample > peaks[bucket]) peaks[bucket] = sample.toDouble()
                         i += 2
                     }
-                    frame += read / format.frameSize
+                    frame += read / frameSize
                 }
-                peaks.map { (it / 32_768.0 * 1000).toInt() / 1000.0 } to frames / format.sampleRate.toDouble()
+                peaks.map { (it / 32_768.0 * 1000).toInt() / 1000.0 } to frames / stream.sampleRate.toDouble()
             }
+        }
     }
 }

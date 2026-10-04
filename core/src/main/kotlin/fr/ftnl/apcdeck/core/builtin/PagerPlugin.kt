@@ -15,16 +15,17 @@ import fr.ftnl.apcdeck.api.ManagerPlugin
 import fr.ftnl.apcdeck.api.PadColor
 import fr.ftnl.apcdeck.api.PadEvent
 import fr.ftnl.apcdeck.api.PluginManifest
+import fr.ftnl.apcdeck.core.PluginSource
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
-val BUILTIN_PLUGINS: List<Pair<PluginManifest, () -> ApcPlugin>> = listOf(
+val BUILTIN_PLUGINS: List<Pair<PluginManifest, PluginSource.Builtin>> = listOf(
     PluginManifest(
         id = "pager", name = "Pager", version = "1.1.0", main = PagerPlugin::class.java.name,
         apiVersion = API_VERSION, description = "Menu : lance et gère les autres plugins",
         author = "apcdeck", color = PadColor.WHITE.index,
-    ) to ::PagerPlugin,
+    ) to PluginSource.Builtin(::PagerPlugin),
 )
 
 /** Page du menu : [row] = bouton de la colonne verte (0..4), [col] = bouton de la ligne rouge (0..7). */

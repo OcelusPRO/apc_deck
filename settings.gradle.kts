@@ -22,10 +22,12 @@ plugins { // Use the Foojay Toolchains plugin to automatically download JDKs req
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
-// api : jar publié aux auteurs de plugins · core : moteur · app : interface Compose (+ navigateur intégré)
+// api : jar publié aux auteurs de plugins · core : moteur commun (PC et Android) · desktop : implémentations PC
+// (MIDI, son, jars, mises à jour) · app : application PC (icône de notification, packaging)
 // plugins:macros : plugin Macros, compilé comme un plugin tiers (jar à glisser dans l'interface)
 include(":api")
 include(":core")
+include(":desktop")
 include(":app")
 include(":plugins:macros")
 include(":plugins:synth")

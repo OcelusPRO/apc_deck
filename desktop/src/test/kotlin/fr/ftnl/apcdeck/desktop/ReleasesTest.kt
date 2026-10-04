@@ -1,4 +1,4 @@
-package fr.ftnl.apcdeck.core
+package fr.ftnl.apcdeck.desktop
 
 import kotlinx.serialization.json.Json
 import kotlin.test.Test

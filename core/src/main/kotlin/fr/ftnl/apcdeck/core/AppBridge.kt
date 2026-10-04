@@ -45,7 +45,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import java.awt.Desktop
 import java.util.UUID
 import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
@@ -56,7 +55,7 @@ import kotlin.io.path.writeBytes
  * Événements : boot, plugins, device, settings, leds, input, learning, pager, update, logs (complet), log (une ligne).
  * boot (identifiant de ce lancement) permet à une page restée ouverte de se recharger après un redémarrage.
  */
-class AppBridge(private val engine: Engine, private val updater: Updater? = null) : AppRoutes {
+class AppBridge(private val engine: Engine, private val updater: Updates? = null) : AppRoutes {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val web get() = engine.web
 
@@ -151,31 +150,12 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
             "installPluginUpdates" -> updater?.installPlugins() ?: error("mises à jour indisponibles")
             "openFolder" -> {
                 val id = json["id"]?.jsonPrimitive?.content
-                openInFileManager(if (id == null) engine.storage.home else engine.storage.pluginDataDir(id))
+                val dir = if (id == null) engine.storage.home else engine.storage.pluginDataDir(id)
+                engine.platform.openFolder(dir.createDirectories().toAbsolutePath())
             }
             else -> error("commande inconnue : $name")
         }
         null
-    }
-
-    /**
-     * Ouvre le dossier dans le gestionnaire de fichiers, côté application (pas dans le navigateur).
-     * Desktop.open échoue en silence depuis les threads du serveur sous Windows : on lance l'outil du système.
-     */
-    private fun openInFileManager(dir: java.nio.file.Path) {
-        val path = dir.createDirectories().toAbsolutePath().toString()
-        val os = System.getProperty("os.name").lowercase()
-        val command = when {
-            "win" in os -> listOf("explorer.exe", path)
-            "mac" in os -> listOf("open", path)
-            else -> listOf("xdg-open", path)
-        }
-        try {
-            ProcessBuilder(command).start()
-        } catch (t: Throwable) {
-            if (!Desktop.isDesktopSupported()) throw IllegalStateException("impossible d'ouvrir $path : ${t.message}")
-            Desktop.getDesktop().open(dir.toFile())
-        }
     }
 
     /** Jar envoyé par l'interface (glisser-déposer ou sélecteur de fichier). */

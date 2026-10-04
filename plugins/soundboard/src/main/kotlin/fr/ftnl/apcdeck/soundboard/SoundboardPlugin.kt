@@ -26,7 +26,6 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.Base64
-import javax.sound.sampled.AudioSystem
 import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
@@ -249,7 +248,7 @@ class SoundboardPlugin : ApcPlugin() {
         val file = fileOf(sound)
         if (!file.exists()) return ctx.log.warn("« ${sound.name} » : aucun fichier audio")
         lateinit var player: SoundPlayer
-        player = SoundPlayer(file, gainOf(sound), sound.start, sound.end) { error -> ctx.scope.launch { finished(sound, player, error) } }
+        player = SoundPlayer(ctx.audio, file, gainOf(sound), sound.start, sound.end) { error -> ctx.scope.launch { finished(sound, player, error) } }
         playing[sound.id] = player
         player.start()
     }
@@ -300,7 +299,7 @@ class SoundboardPlugin : ApcPlugin() {
         preview?.stop()
         previewVolume = volume.coerceIn(0, Sound.MAX_VOLUME)
         lateinit var player: SoundPlayer
-        player = SoundPlayer(file, previewVolume / 100.0 * master / 100.0, from, to) { error ->
+        player = SoundPlayer(ctx.audio, file, previewVolume / 100.0 * master / 100.0, from, to) { error ->
             ctx.scope.launch {
                 if (error != null) ctx.log.error("« ${sound.name} » : écoute impossible", error)
                 if (preview === player) stopPreview()
@@ -360,8 +359,8 @@ class SoundboardPlugin : ApcPlugin() {
             "peaks" -> {
                 val sound = Slot.fromJson(json)?.let(sounds::get)?.takeIf { fileOf(it).exists() } ?: return null
                 val (peaks, duration) = peaksCache.getOrPut(sound.id) {
-                    val count = (SoundPlayer.duration(fileOf(sound)) * PEAKS_PER_SECOND).toInt().coerceIn(MIN_PEAKS, MAX_PEAKS)
-                    SoundPlayer.peaks(fileOf(sound), count)
+                    val count = (SoundPlayer.duration(ctx.audio, fileOf(sound)) * PEAKS_PER_SECOND).toInt().coerceIn(MIN_PEAKS, MAX_PEAKS)
+                    SoundPlayer.peaks(ctx.audio, fileOf(sound), count)
                 }
                 return MiniJson.stringify(mapOf("id" to sound.id, "peaks" to peaks, "duration" to duration))
             }
@@ -417,7 +416,7 @@ class SoundboardPlugin : ApcPlugin() {
         else part.writeBytes(bytes, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
         if (json.bool("last") != true) return
 
-        if (runCatching { AudioSystem.getAudioFileFormat(part.toFile()) }.isFailure) {
+        if (runCatching { ctx.audio.openFile(part).close() }.isFailure) {
             part.deleteIfExists()
             error("format audio non reconnu")
         }
@@ -447,7 +446,7 @@ class SoundboardPlugin : ApcPlugin() {
         var sound = Sound.fromJson(json, previous?.id ?: newId(), previous)
         if (previous != null && (sound.start > 0 || sound.end > 0) && fileOf(previous).exists()) {
             val cut = sound.copy(id = newId(), start = 0.0, end = 0.0)
-            val duration = SoundPlayer.cut(fileOf(previous), fileOf(cut), sound.start, sound.end)
+            val duration = SoundPlayer.cut(ctx.audio, fileOf(previous), fileOf(cut), sound.start, sound.end)
             if (previewInfo["id"] == previous.id) stopPreview()
             stop(previous.id)
             deleteFile(previous)

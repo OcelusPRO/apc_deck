@@ -3,7 +3,7 @@
   "name": "Soundboard",
   "version": "${version}",
   "main": "fr.ftnl.apcdeck.soundboard.SoundboardPlugin",
-  "apiVersion": 1,
+  "apiVersion": 2,
   "description": "Joue un son par pad (nom, couleur, fichier audio), sur 40 pages",
   "author": "ftnl",
   "repository": "https://github.com/OcelusPRO/apc_deck",

@@ -3,7 +3,7 @@
   "name": "Synthé",
   "version": "${version}",
   "main": "fr.ftnl.apcdeck.synth.SynthPlugin",
-  "apiVersion": 1,
+  "apiVersion": 2,
   "description": "Synthé polyphonique joué au clavier (notes MIDI), réglé aux potars",
   "author": "ftnl",
   "repository": "https://github.com/OcelusPRO/apc_deck",

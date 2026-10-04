@@ -86,7 +86,7 @@ class SynthPlugin : ApcPlugin() {
         engine.params = params
         engine.performance = perf
         try {
-            engine.start()
+            engine.start(ctx.audio)
             ctx.log.info("sortie audio ouverte (${engine.sampleRate} Hz)")
         } catch (t: Throwable) {
             audioError = t.message ?: t::class.simpleName

@@ -51,10 +51,12 @@ class WebServer(
 ) {
     private val server: ServerSocket = ServerSocket().apply {
         reuseAddress = true
+        // 127.0.0.1 explicitement : sur Android, getLoopbackAddress() est ::1 et la page (127.0.0.1) serait refusée.
+        val loopback = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         try {
-            bind(InetSocketAddress(InetAddress.getLoopbackAddress(), preferredPort), 50)
+            bind(InetSocketAddress(loopback, preferredPort), 50)
         } catch (_: BindException) {
-            bind(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 50) // port occupé : port libre
+            bind(InetSocketAddress(loopback, 0), 50) // port occupé : port libre
         }
     }
     private val streams = ConcurrentHashMap<String, CopyOnWriteArrayList<OutputStream>>()

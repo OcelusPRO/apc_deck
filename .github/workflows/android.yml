@@ -74,6 +74,9 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: ffmpeg (fichiers audio de test)
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
       - name: Test de fumée sur émulateur (Android 14)
         uses: reactivecircus/android-emulator-runner@v2
         with:

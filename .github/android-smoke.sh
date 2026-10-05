@@ -35,7 +35,7 @@ adb forward tcp:18080 tcp:"$port"
 base="http://127.0.0.1:18080/$token"
 
 sleep 5
-journal=$(adb logcat -d -s System.out)
+journal=$(adb logcat -d -s System.out || true)
 echo "$journal" | grep -E "INFO|WARN|ERROR" | sed 's/^.*System.out: //' | head -40
 for p in "Pager" "Synthé" "Soundboard"; do
   echo "$journal" | grep -q "$p .* charg" || fail "plugin $p non chargé"
@@ -51,7 +51,8 @@ done
 ok=""
 for _ in $(seq 1 15); do
   adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
-  if adb shell cat /sdcard/ui.xml | grep -qE "Contrôle à distance|Contr&#244;le|APC Deck"; then ok=1; break; fi
+  ui=$(adb shell cat /sdcard/ui.xml 2>/dev/null || true)
+  if grep -qE "Contrôle à distance|APC Deck" <<<"$ui"; then ok=1; break; fi
   sleep 2
 done
 [ -n "$ok" ] || fail "l'interface n'apparaît pas dans la WebView"
@@ -60,7 +61,9 @@ echo "interface affichée dans la WebView"
 # APC virtuel : un appui simulé est vu dans l'état poussé à l'interface.
 curl -sf -X POST -H 'Content-Type: application/json' -d '{"type":"pad","x":2,"y":3,"pressed":true}' "$base/app/cmd/simulate" >/dev/null
 sleep 1
-timeout 5 curl -sN "$base/app/events" | grep -m1 '"event":"input"' | grep -q '"pads":\[26\]' || fail "appui de l'APC virtuel non pris en compte"
+# (sorties capturées avant d'être filtrées : avec pipefail, « curl | grep -m1 » échouerait sur le SIGPIPE de curl)
+events=$(timeout 3 curl -sN "$base/app/events" || true)
+grep '"event":"input"' <<<"$events" | grep -q '"pads":\[26\]' || fail "appui de l'APC virtuel non pris en compte : $(grep '"event":"input"' <<<"$events" | head -1)"
 echo "APC virtuel : appui pris en compte"
 
 # Décodage audio Android : WAV et MP3 envoyés à la Soundboard, puis forme d'onde (décodée par MediaCodec).

@@ -24,7 +24,7 @@ url=""
 for _ in $(seq 1 60); do
   url=$(adb logcat -d -s System.out | grep -oE "interface : http://127\.0\.0\.1:[0-9]+/[0-9a-f]+/" | tail -1 | sed 's/interface : //') || true
   [ -n "$url" ] && break
-  adb logcat -d | grep -q "FATAL EXCEPTION" && fail "l'app a planté au démarrage"
+  grep -q "FATAL EXCEPTION" <<<"$(adb logcat -d || true)" && fail "l'app a planté au démarrage"
   sleep 2
 done
 [ -n "$url" ] || fail "le moteur n'a pas démarré (pas d'adresse d'interface dans le journal)"
@@ -83,5 +83,5 @@ done
 
 grep -q "sortie audio ouverte" <<<"$journal" && echo "Synthé : sortie audio ouverte" || echo "::warning::Synthé : pas de sortie audio sur l'émulateur"
 adb exec-out screencap -p > screen.png
-adb logcat -d | grep -q "FATAL EXCEPTION" && fail "plantage pendant le test"
+grep -q "FATAL EXCEPTION" <<<"$(adb logcat -d || true)" && fail "plantage pendant le test"
 echo "test de fumée réussi"

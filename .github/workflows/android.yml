@@ -36,12 +36,19 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Versions de l'Android Gradle Plugin publiées
-        continue-on-error: true
-        run: curl -s https://dl.google.com/android/maven2/com/android/tools/build/gradle/maven-metadata.xml | grep -oE "<version>[0-9]+\.[0-9]+\.[0-9]+</version>" | tail -8
-
       - name: APK de développement + tests
         run: bash ./gradlew -Pandroid=true :android:assembleDebug :android:testDebugUnitTest --no-configuration-cache --stacktrace
+
+      - name: Contenu de l'APK (interface, pages des plugins embarqués)
+        run: |
+          apk=$(ls android/build/outputs/apk/debug/*.apk)
+          unzip -l "$apk" > apk.txt
+          for f in ui/index.html assets/plugins/synth/plugin.json assets/plugins/synth/web/index.html \
+                   assets/plugins/soundboard/plugin.json assets/plugins/soundboard/web/index.html classes.dex; do
+            grep -q " $f\$" apk.txt || { echo "::error::$f absent de l'APK"; exit 1; }
+          done
+          ! grep -qE " (plugin\.json|web/index\.html)$" apk.txt || { echo "::error::ressources de plugin à la racine de l'APK"; exit 1; }
+          ls -la "$apk"
 
       - uses: actions/upload-artifact@v4
         with:

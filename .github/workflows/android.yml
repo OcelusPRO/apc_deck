@@ -16,6 +16,7 @@ on:
       - "*.gradle.kts"
       - "package*.json"
       - ".github/workflows/android.yml"
+      - ".github/android-smoke.sh"
   pull_request:
   workflow_dispatch:
 

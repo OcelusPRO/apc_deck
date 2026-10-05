@@ -9,9 +9,6 @@ pluginManagement {
         google()
         mavenCentral()
     }
-    plugins {
-        id("com.android.application") version "9.0.0" // Android Gradle Plugin (module android)
-    }
 }
 
 dependencyResolutionManagement { // Use Maven Central as the default repository (where Gradle will download dependencies) in all subprojects.

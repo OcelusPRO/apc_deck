@@ -4,6 +4,7 @@ dependencyResolutionManagement {
     @Suppress("UnstableApiUsage") repositories {
         mavenCentral()
         gradlePluginPortal() // plugin Animal Sniffer (convention android-compatible)
+        if (providers.gradleProperty("android").orNull == "true") google() // Android Gradle Plugin
     }
     
     // Reuse the version catalog from the main build.

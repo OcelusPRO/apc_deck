@@ -54,3 +54,37 @@ jobs:
         with:
           name: APCDeck-Android-debug
           path: android/build/outputs/apk/debug/*.apk
+
+  # Pas d'appareil Android sous la main : l'APK est installé et testé sur un émulateur (voir android-smoke.sh).
+  emulator:
+    needs: apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: APCDeck-Android-debug
+          path: apk
+
+      - name: Accès à KVM (accélération de l'émulateur)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Test de fumée sur émulateur (Android 14)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: bash .github/android-smoke.sh apk/android-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: APCDeck-Android-emulateur
+          path: screen.png
+          if-no-files-found: ignore

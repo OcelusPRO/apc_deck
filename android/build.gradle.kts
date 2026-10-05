@@ -2,6 +2,8 @@
 // avec le MIDI USB, le son et les plugins dex d'Android. Incluse seulement avec le SDK Android :
 //   gradlew -Pandroid=true :android:assembleDebug      APK de développement -> build/outputs/apk/debug
 //   gradlew -Pandroid=true :android:assembleRelease    APK signé (variables APCDECK_KEYSTORE…) -> build/outputs/apk/release
+import javax.inject.Inject
+
 plugins {
     id("com.android.application")
 }
@@ -56,23 +58,45 @@ android {
                 "META-INF/AL2.0", "META-INF/LGPL2.1", "META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
         }
     }
-
-    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/plugin-assets"))
 }
 
 /** Plugins officiels compilés dans l'app : leurs classes en dépendance, leur plugin.json et leur page web en assets. */
 val bundledPlugins = mapOf("synth" to ":plugins:synth", "soundboard" to ":plugins:soundboard")
 
-val pluginAssets = tasks.register<Sync>("pluginAssets") {
-    bundledPlugins.forEach { (id, path) ->
-        from(project(path).tasks.named("processResources")) {
-            include("plugin.json", "web/**")
-            into("plugins/$id")
+/** Copie plugin.json et web/ de chaque plugin embarqué dans <sortie>/plugins/<id>/. */
+abstract class PluginAssets : DefaultTask() {
+    @get:Input abstract val ids: ListProperty<String>
+
+    /** Ressources de chaque plugin (dans l'ordre de [ids]). */
+    @get:InputFiles abstract val resources: ConfigurableFileCollection
+
+    @get:OutputDirectory abstract val output: DirectoryProperty
+
+    @get:Inject abstract val fs: FileSystemOperations
+
+    @TaskAction
+    fun copy() {
+        val dirs = resources.files.toList()
+        fs.sync {
+            ids.get().forEachIndexed { i, id ->
+                from(dirs[i]) {
+                    include("plugin.json", "web/**")
+                    into("plugins/$id")
+                }
+            }
+            into(output)
         }
     }
-    into(layout.buildDirectory.dir("generated/plugin-assets"))
 }
-tasks.named("preBuild") { dependsOn(pluginAssets) }
+
+val pluginAssets = tasks.register<PluginAssets>("pluginAssets") {
+    ids = bundledPlugins.keys.toList()
+    bundledPlugins.values.forEach { path -> resources.from(project(path).tasks.named("processResources")) }
+}
+
+androidComponents {
+    onVariants { variant -> variant.sources.assets?.addGeneratedSourceDirectory(pluginAssets, PluginAssets::output) }
+}
 
 dependencies {
     implementation(project(":core"))

@@ -21,11 +21,13 @@ import fr.ftnl.apcdeck.core.builtin.PagerPlugin
 import fr.ftnl.apcdeck.core.builtin.Slot
 import fr.ftnl.apcdeck.core.device.DeviceMode
 import fr.ftnl.apcdeck.core.device.KnobMode
+import fr.ftnl.apcdeck.core.remote.QrCode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -45,7 +47,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import java.awt.Desktop
 import java.util.UUID
 import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
@@ -53,10 +54,10 @@ import kotlin.io.path.writeBytes
 
 /**
  * Relie le moteur à l'interface web : pousse l'état (événements SSE) et exécute les commandes.
- * Événements : boot, plugins, device, settings, leds, input, learning, pager, update, logs (complet), log (une ligne).
+ * Événements : boot, plugins, device, settings, leds, input, learning, pager, update, remote, logs (complet), log (une ligne).
  * boot (identifiant de ce lancement) permet à une page restée ouverte de se recharger après un redémarrage.
  */
-class AppBridge(private val engine: Engine, private val updater: Updater? = null) : AppRoutes {
+class AppBridge(private val engine: Engine, private val updater: Updates? = null) : AppRoutes {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val web get() = engine.web
 
@@ -80,6 +81,7 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
                 .map { "pager" to pagerJson(it) },
         )
         updater?.let { u -> watch(u.state.map { "update" to updateJson(it) }) }
+        watch(combine(engine.remoteVersion, engine.remoteClient.status, engine.settingsState) { _, _, _ -> "remote" to remoteJson() })
         engine.logs.listeners += { line -> web.emitApp("log", logJson(line).toString()) }
     }
 
@@ -97,6 +99,7 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
         "learning" to learningJson(engine.learningState.value),
         "pager" to pagerJson(pager?.layout?.value),
         "update" to (updater?.state?.value?.let(::updateJson) ?: JsonNull),
+        "remote" to remoteJson(),
         "logs" to JsonArray(engine.logs.lines.value.map(::logJson)),
     ).map { (event, json) -> event to json.toString() }
 
@@ -112,6 +115,7 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
 
         when (name) {
             "reconnect" -> engine.reconnect()
+            "virtual" -> engine.setVirtual(bool("enabled"))
             "mode" -> DeviceMode.valueOf(str("mode")).let {
                 engine.setDeviceMode(it, if (it == DeviceMode.GENERIC) KnobMode.ABSOLUTE else KnobMode.RELATIVE)
             }
@@ -148,33 +152,32 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
             "installUpdate" -> updater?.install() ?: error("mises à jour indisponibles")
             "installPluginUpdate" -> updater?.installPlugin(str("id")) ?: error("mises à jour indisponibles")
             "installPluginUpdates" -> updater?.installPlugins() ?: error("mises à jour indisponibles")
+            "remoteEnable" -> engine.setRemoteEnabled(bool("enabled"))
+            "remoteName" -> engine.setDeviceName(str("name"))
+            "remotePair" -> engine.remoteServer.startPairing()
+            "remoteCancelPairing" -> engine.remoteServer.cancelPairing()
+            "remoteRevoke" -> engine.remoteServer.revoke(str("fingerprint"))
+            "remotePairWith" -> {
+                engine.remoteClient.pair(str("link"))
+                engine.remoteClient.status.value.server?.let(engine::rememberRemoteServer)
+            }
+            "remoteConnect" -> {
+                engine.remoteClient.connect(str("fingerprint"))
+                engine.rememberRemoteServer(str("fingerprint"))
+            }
+            "remoteDisconnect" -> {
+                engine.remoteClient.disconnect()
+                engine.rememberRemoteServer("")
+            }
+            "remoteForget" -> engine.remoteClient.forget(str("fingerprint"))
             "openFolder" -> {
                 val id = json["id"]?.jsonPrimitive?.content
-                openInFileManager(if (id == null) engine.storage.home else engine.storage.pluginDataDir(id))
+                val dir = if (id == null) engine.storage.home else engine.storage.pluginDataDir(id)
+                engine.platform.openFolder(dir.createDirectories().toAbsolutePath())
             }
             else -> error("commande inconnue : $name")
         }
         null
-    }
-
-    /**
-     * Ouvre le dossier dans le gestionnaire de fichiers, côté application (pas dans le navigateur).
-     * Desktop.open échoue en silence depuis les threads du serveur sous Windows : on lance l'outil du système.
-     */
-    private fun openInFileManager(dir: java.nio.file.Path) {
-        val path = dir.createDirectories().toAbsolutePath().toString()
-        val os = System.getProperty("os.name").lowercase()
-        val command = when {
-            "win" in os -> listOf("explorer.exe", path)
-            "mac" in os -> listOf("open", path)
-            else -> listOf("xdg-open", path)
-        }
-        try {
-            ProcessBuilder(command).start()
-        } catch (t: Throwable) {
-            if (!Desktop.isDesktopSupported()) throw IllegalStateException("impossible d'ouvrir $path : ${t.message}")
-            Desktop.getDesktop().open(dir.toFile())
-        }
     }
 
     /** Jar envoyé par l'interface (glisser-déposer ou sélecteur de fichier). */
@@ -285,11 +288,14 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
     private fun deviceJson(d: DeviceStatus) = buildJsonObject {
         put("connected", d.connected)
         put("detail", d.detail)
+        put("virtual", d.virtual)
     }
 
     private fun settingsJson(s: Settings) = buildJsonObject {
         put("mode", s.mode.name)
         put("knobs", s.knobs.name)
+        put("virtual", s.virtualApc)
+        put("platform", engine.platform.id)
         putJsonArray("modes") { DeviceMode.entries.forEach { add(JsonPrimitive(it.name)) } }
     }
 
@@ -352,6 +358,64 @@ class AppBridge(private val engine: Engine, private val updater: Updater? = null
                     put("error", p.error)
                 })
             }
+        }
+    }
+
+    /** Contrôle à distance : ce PC piloté par des mobiles (server), cet appareil pilotant un PC (client). */
+    private fun remoteJson(): JsonElement {
+        val server = engine.remoteServer
+        val connected = server.sessions.associateBy { it.fingerprint }
+        val client = engine.remoteClient.status.value
+        return buildJsonObject {
+            put("deviceName", engine.deviceName)
+            put("server", buildJsonObject {
+                put("enabled", engine.settingsState.value.remoteEnabled)
+                put("running", server.isRunning)
+                put("port", server.port)
+                put("error", engine.remoteError)
+                put("fingerprint", engine.remoteStore.identity.fingerprint)
+                put("pairing", server.pairing?.let { p ->
+                    val link = p.link.format()
+                    val qr = QrCode.of(link)
+                    buildJsonObject {
+                        put("link", link)
+                        put("hosts", JsonArray(p.link.hosts.map(::JsonPrimitive)))
+                        put("qrSize", qr.size)
+                        put("qrPath", qr.path)
+                        put("expiresAt", p.expiresAt)
+                    }
+                } ?: JsonNull)
+                putJsonArray("devices") {
+                    server.devices.forEach { d ->
+                        add(buildJsonObject {
+                            put("fingerprint", d.fingerprint)
+                            put("name", d.name)
+                            put("pairedAt", d.pairedAt)
+                            put("lastSeen", d.lastSeen)
+                            put("connected", d.fingerprint in connected)
+                            put("address", connected[d.fingerprint]?.address)
+                        })
+                    }
+                }
+            })
+            put("client", buildJsonObject {
+                put("state", client.state.name)
+                put("server", client.server)
+                put("serverName", client.serverName)
+                put("address", client.address)
+                put("error", client.error)
+                putJsonArray("servers") {
+                    engine.remoteClient.servers.forEach { s ->
+                        add(buildJsonObject {
+                            put("fingerprint", s.fingerprint)
+                            put("name", s.name)
+                            put("hosts", JsonArray(s.hosts.map(::JsonPrimitive)))
+                            put("port", s.port)
+                            put("pairedAt", s.pairedAt)
+                        })
+                    }
+                }
+            })
         }
     }
 

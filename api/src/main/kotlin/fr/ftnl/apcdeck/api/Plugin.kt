@@ -3,8 +3,11 @@ package fr.ftnl.apcdeck.api
 import kotlinx.coroutines.CoroutineScope
 import java.nio.file.Path
 
-/** Version de l'API ; un plugin déclarant une version supérieure est refusé. */
-const val API_VERSION: Int = 1
+/**
+ * Version de l'API ; un plugin déclarant une version supérieure est refusé.
+ * v2 : [PluginContext.audio] (son multiplateforme, PC et Android).
+ */
+const val API_VERSION: Int = 2
 
 /**
  * Classe de base de tout plugin. Le jar doit contenir un `plugin.json` à sa racine :
@@ -125,6 +128,9 @@ interface PluginContext {
 
     /** Pilotage de l'application (utilisé surtout par le gestionnaire). */
     val host: Host
+
+    /** Sortie audio et lecture de fichiers son (API v2), à utiliser plutôt que javax.sound (absent d'Android). */
+    val audio: Audio
 }
 
 interface PluginLogger {

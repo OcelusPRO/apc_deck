@@ -1,10 +1,9 @@
 package fr.ftnl.apcdeck.synth
 
+import fr.ftnl.apcdeck.api.Audio
+import fr.ftnl.apcdeck.api.AudioOutput
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
-import javax.sound.sampled.AudioFormat
-import javax.sound.sampled.AudioSystem
-import javax.sound.sampled.SourceDataLine
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -177,12 +176,10 @@ class SynthEngine(
 
     // --- sortie audio -------------------------------------------------------------------
 
-    /** Ouvre la carte son et démarre le thread audio. Lève une exception si aucune sortie n'est disponible. */
-    fun start(blockFrames: Int = 256, bufferFrames: Int = 1024) {
+    /** Ouvre la sortie audio et démarre le thread audio. Lève une exception si aucune sortie n'est disponible. */
+    fun start(audio: Audio, blockFrames: Int = 256, bufferFrames: Int = 1024) {
         check(!running) { "déjà démarré" }
-        val format = AudioFormat(sampleRate.toFloat(), 16, 2, true, false)
-        val line: SourceDataLine = AudioSystem.getSourceDataLine(format)
-        line.open(format, bufferFrames * 4)
+        val line: AudioOutput = audio.openOutput(sampleRate, 2, bufferFrames)
         line.start()
         running = true
         thread = Thread({
@@ -205,8 +202,6 @@ class SynthEngine(
                     line.write(bytes, 0, bytes.size) // bloque tant que le tampon est plein : cadence le rendu
                 }
             } finally {
-                line.stop()
-                line.flush()
                 line.close()
             }
         }, "synth-audio").apply {

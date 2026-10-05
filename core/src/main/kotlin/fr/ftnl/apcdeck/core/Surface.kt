@@ -63,6 +63,16 @@ class Surface : Leds {
         dirty = true
     }
 
+    /** Reprend un état complet (LED reçues du PC piloté à distance). */
+    fun load(snapshot: LedSnapshot) {
+        for (i in 0 until Grid.PADS) {
+            color[i] = snapshot.padColors.getOrElse(i) { 0 }
+            effect[i] = snapshot.padEffects.getOrElse(i) { Effect.SOLID }.channel
+        }
+        ledButtons.forEachIndexed { i, b -> buttons[i] = snapshot.buttons[b]?.velocity ?: 0 }
+        dirty = true
+    }
+
     /** Force le renvoi complet au prochain flush (reconnexion, changement de mode). */
     fun invalidate() {
         sentColor.fill(-1)

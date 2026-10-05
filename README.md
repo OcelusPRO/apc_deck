@@ -7,10 +7,63 @@ notification) et son interface s'ouvre dans le navigateur par défaut.
 
 | Module | Rôle |
 |---|--- |
-| `api` | API publique des plugins (événements, LED, configuration, données, interface web) |
-| `core` | Moteur : MIDI, routage, chargement des jars, serveur web local, interface (`src/main/resources/ui`) |
-| `app` | Point d'entrée, icône de notification, packaging |
+| `api` | API publique des plugins (événements, LED, configuration, données, interface web, son) |
+| `core` | Moteur commun au PC et à Android : protocole de l'APC, routage, plugins, serveur web local, interface (`ui/`) |
+| `desktop` | Implémentations PC du cœur : MIDI (`javax.sound.midi`), son (`javax.sound.sampled`), jars JVM, mises à jour |
+| `app` | Application PC : point d'entrée, icône de notification, packaging |
+| `android` | Application Android : WebView, service, MIDI USB, son, plugins dex (inclus avec `-Pandroid=true`) |
 | `plugins/macros` | Plugin Macros (scripts shell sur les pads), livré avec l'application |
+| `plugins/synth` | Plugin Synthé (synthé polyphonique joué au clavier), livré avec l'application |
+| `plugins/soundboard` | Plugin Soundboard (un son par pad, sur 40 pages), livré avec l'application |
+
+## APC virtuel
+
+Sans APC branché, le bouton **APC virtuel** de la barre du haut transforme la vue de l'appareil en APC jouable :
+pads, boutons et touches system à la souris ou au doigt (multi-touch), potars à la molette ou en glissant
+verticalement, clavier de 25 touches avec octaves. Le clavier de l'ordinateur joue aussi les notes (positions
+physiques : rangée du milieu pour les touches blanches, rangée du dessus pour les dièses, `W` / `X` en AZERTY pour
+l'octave). Les plugins reçoivent les mêmes événements qu'avec l'appareil. Le réglage est conservé ; dès qu'un APC
+réel est branché il reprend la main, et l'APC virtuel revient s'il est débranché.
+
+## Android
+
+L'app Android embarque le même moteur et la même interface que sur PC, avec le Synthé et la Soundboard. Un APC
+Key 25 mk2 se branche en USB (câble OTG) ; sans APC, l'APC virtuel s'utilise au doigt (multi-touch). L'app tourne en
+arrière-plan (notification « APC Deck actif », « Quitter » pour l'arrêter). Android 8.0 minimum.
+
+```bash
+./gradlew -Pandroid=true :android:assembleDebug   # APK -> android/build/outputs/apk/debug (SDK Android requis)
+```
+
+- Le module `android` n'est inclus qu'avec `-Pandroid=true` : les builds PC n'ont pas besoin du SDK.
+- `api`, `core` et les plugins officiels sont vérifiés à chaque `gradlew check` : leur bytecode ne doit utiliser que
+  des API présentes sur Android 8.0 (convention `android-compatible`, Animal Sniffer).
+- Plugins tiers : Android n'exécute pas les classes JVM, le jar doit aussi contenir un `classes.dex` (outil `d8` du
+  SDK Android : `d8 --release --min-api 26 --lib android.jar --output dex.zip plugin.jar`, puis ajouter le
+  `classes.dex` obtenu au jar). Le son passe par `ctx.audio` (API v2) au lieu de `javax.sound`, absent d'Android.
+- Releases : l'APK est joint à chaque release. Pour qu'il soit signé toujours avec la même clé (sinon Android refuse
+  les mises à jour), définir les secrets `APCDECK_KEYSTORE_BASE64` (keystore en base64), `APCDECK_KEYSTORE_PASSWORD`,
+  `APCDECK_KEY_ALIAS` et `APCDECK_KEY_PASSWORD` ; sans eux, l'APK publié est un APK de développement.
+
+## Contrôle à distance (mobile ↔ PC)
+
+Un mobile sur le même réseau local peut servir d'APC à un PC : il affiche ses LED et lui envoie ce qui est joué
+(APC virtuel sur l'écran, ou APC branché au mobile en USB). Sur le PC : **Contrôle à distance** → activer, puis
+**Appairer un mobile** affiche un QR code ; sur le mobile : **Contrôle à distance → Scanner le QR code d'un PC**
+(ou coller le lien d'appairage). Les reconnexions suivantes sont automatiques ; un appareil se retire depuis le PC.
+
+Sécurité (`core/.../remote`, protocole documenté dans `RemoteProtocol.kt`) :
+- chaque installation a une paire de clés P-256 (`remote/identity.json`) ;
+- le QR code contient l'empreinte de la clé du PC et un secret aléatoire de 128 bits, à usage unique, valable
+  5 minutes ;
+- à chaque connexion : échange de clés éphémères ECDH (secret persistant), le PC signe la conversation avec sa clé
+  (le mobile vérifie l'empreinte épinglée : pas d'usurpation du PC), le mobile signe avec la sienne (le PC ne connaît
+  que les appareils appairés) ; à l'appairage le mobile prouve qu'il connaît le secret par un HMAC lié à la
+  conversation, le secret ne circule jamais ;
+- ensuite tout est chiffré et authentifié (AES-256-GCM, une clé par direction, compteurs : rien ne peut être
+  modifié, rejoué ou réordonné).
+
+Le PC écoute sur le port 47810 (TCP) seulement quand le contrôle à distance est activé.
 
 ## Développement
 
@@ -33,7 +86,7 @@ rien à installer pour l'utilisateur). Résultats dans `app/build/dist/`.
 
 Configuration et données (dossier créé au premier lancement) : `%APPDATA%\.APC_Deck` (Windows),
 `~/Library/Application Support/.APC_Deck` (macOS), `~/.config/.APC_Deck` (Linux). Au premier lancement d'une
-version packagée, les plugins livrés (Macros) y sont copiés dans `plugins/`.
+version packagée, les plugins livrés (Macros, Synthé, Soundboard) y sont copiés dans `plugins/`.
 
 ## Releases et mises à jour
 
@@ -58,6 +111,6 @@ version packagée, les plugins livrés (Macros) y sont copiés dans `plugins/`.
   - `"updateUrl": "https://…/mon-plugin.jar"` : adresse directe du jar. Il n'est retéléchargé que s'il a changé
     (ETag / Last-Modified) et la mise à jour est proposée dès que son contenu diffère du jar installé, même sans
     changement de version (jamais vers une version plus ancienne).
-- **Plugins officiels** (Macros, Synthé) : même numéro de version que l'application (`"version": "${version}"` dans
+- **Plugins officiels** (Macros, Synthé, Soundboard) : même numéro de version que l'application (`"version": "${version}"` dans
   leur `plugin.json`, remplacé au build par `appVersion`), joints à chaque release sous le nom `<id>.jar`
   (`./gradlew :app:packagePlugins`) et mis à jour avec elle.

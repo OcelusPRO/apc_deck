@@ -1,0 +1,12 @@
+{
+  "name": "apcdeck-soundboard-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p . && vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@apcdeck/web": "*"
+  }
+}

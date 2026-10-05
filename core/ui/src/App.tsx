@@ -5,37 +5,71 @@ import { ApcView } from "./ApcView";
 import { ConfigPanel } from "./ConfigPanel";
 import { PagerEditor } from "./PagerEditor";
 import { PluginPage } from "./PluginPage";
-import { DEVICE, Sidebar } from "./Sidebar";
-import type { PluginUpdate, Update } from "./types";
+import { RemoteView } from "./RemoteView";
+import { DEVICE, REMOTE, Sidebar } from "./Sidebar";
+import type { AppState, PluginUpdate, Update } from "./types";
+
+type MobileTab = "list" | "main" | "config";
+
+/** État du contrôle à distance, en quelques mots (sous son entrée de la liste). */
+function remoteHint(remote: AppState["remote"]): string {
+  if (!remote) return "";
+  const c = remote.client;
+  if (c.state === "CONNECTED") return `Pilote ${c.serverName}`;
+  if (c.state === "CONNECTING") return `Connexion à ${c.serverName ?? "un PC"}…`;
+  const connected = remote.server.devices.filter((d) => d.connected).length;
+  if (remote.server.running) return connected > 0 ? `${connected} mobile(s) connecté(s)` : "En attente d'un mobile";
+  return "Piloter ce PC depuis un mobile, ou un PC d'ici";
+}
 
 export function App() {
   const state = useAppState();
   const [selected, setSelected] = useState<string>(() => sessionStorage.getItem("selected") ?? DEVICE);
+  // Petit écran (mobile) : une seule colonne à la fois.
+  const [tab, setTab] = useState<MobileTab>("main");
   const select = (id: string) => {
     setSelected(id);
     sessionStorage.setItem("selected", id);
+    setTab("main");
   };
 
   const plugin = state.plugins.find((p) => p.id === selected) ?? null;
   // Plugin retiré : retour à la vue de l'appareil.
   useEffect(() => {
-    if (selected !== DEVICE && state.plugins.length > 0 && !plugin) select(DEVICE);
+    if (selected !== DEVICE && selected !== REMOTE && state.plugins.length > 0 && !plugin) select(DEVICE);
   }, [selected, state.plugins, plugin]);
 
+  // Ce mobile pilote un PC : la vue de l'appareil devient l'APC de ce PC.
+  const remoteServer = state.remote?.client.state === "CONNECTED" ? state.remote.client.serverName : null;
   // Plugin avec page web mais sans options : sa page prend aussi la place du panneau de configuration.
-  const showConfig = !(plugin?.webUrl && plugin.fields.length === 0);
+  const showConfig = selected !== REMOTE && !(plugin?.webUrl && plugin.fields.length === 0);
+  const column = (t: MobileTab) => (tab === t ? "" : "hidden lg:block");
 
   return (
     <JarDropZone>
       <div className="flex h-full flex-col">
-        <TopBar state={state} />
+        <TopBar state={state} onVirtual={() => select(DEVICE)} />
         {state.update && <UpdateBanner update={state.update} />}
         {state.update && state.update.plugins.length > 0 && <PluginUpdatesBanner plugins={state.update.plugins} />}
-        <div className={cx("grid min-h-0 flex-1", showConfig ? "grid-cols-[300px_minmax(0,1fr)_360px]" : "grid-cols-[300px_minmax(0,1fr)]")}>
-          <Sidebar plugins={state.plugins} selected={selected} onSelect={select} />
-          <main className="relative min-h-0 min-w-0 overflow-auto">
-            {!plugin ? (
-              <ApcView state={state} />
+        <nav className="flex flex-none border-b border-line lg:hidden">
+          {([["list", "Plugins"], ["main", "Vue"], ...(showConfig ? [["config", "Options"]] : [])] as [MobileTab, string][]).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              className={cx("flex-1 cursor-pointer border-b-2 py-2 text-[13px]", tab === id ? "border-accent text-text" : "border-transparent text-muted")}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+        <div className={cx("min-h-0 flex-1 lg:grid", showConfig ? "lg:grid-cols-[300px_minmax(0,1fr)_360px]" : "lg:grid-cols-[300px_minmax(0,1fr)]")}>
+          <Sidebar plugins={state.plugins} selected={selected} onSelect={select} remoteHint={remoteHint(state.remote)} className={cx("h-full", column("list"))} />
+          <main className={cx("relative h-full min-h-0 min-w-0 overflow-auto", column("main"))}>
+            {selected === REMOTE ? (
+              <RemoteView remote={state.remote} />
+            ) : !plugin ? (
+              <ApcView state={state} virtual={!!state.device.virtual || remoteServer !== null} remoteServer={remoteServer} />
             ) : plugin.manager && state.pager ? (
               <PagerEditor pager={state.pager} plugins={state.plugins} />
             ) : plugin.webUrl ? (
@@ -50,7 +84,7 @@ export function App() {
               </p>
             )}
           </main>
-          {showConfig && <ConfigPanel plugin={plugin} learning={state.learning} />}
+          {showConfig && <ConfigPanel plugin={plugin} learning={state.learning} className={cx("h-full", column("config"))} />}
         </div>
       </div>
       <Toasts />
@@ -58,17 +92,34 @@ export function App() {
   );
 }
 
-function TopBar({ state }: { state: ReturnType<typeof useAppState> }) {
+function TopBar({ state, onVirtual }: { state: ReturnType<typeof useAppState>; onVirtual: () => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const { connected, detail, virtual } = state.device;
+  const virtualOn = !!state.settings?.virtual;
   return (
-    <header className="flex flex-none items-center gap-3 border-b border-line px-4 py-2.5">
+    <header className="flex flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2.5">
       <h1 className="m-0 text-xl font-bold">APC Deck</h1>
-      <span className={cx("h-2.5 w-2.5 rounded-full", state.device.connected ? "bg-ok" : "bg-ko")} />
-      <span className="min-w-0 flex-1 truncate text-xs" title={state.device.detail}>
-        {state.device.connected ? "APC connecté" : state.device.detail}
+      <span className={cx("h-2.5 w-2.5 rounded-full", connected ? "bg-ok" : virtual ? "bg-accent" : "bg-ko")} />
+      <span className="min-w-0 flex-1 truncate text-xs" title={detail}>
+        {connected ? "APC connecté" : virtual ? "APC virtuel (aucun APC branché)" : detail}
       </span>
+      {/* Proposé quand aucun APC n'est branché ; reste visible tant qu'il est activé, pour pouvoir le couper. */}
+      {state.settings && (!connected || virtualOn) && state.remote?.client.state !== "CONNECTED" && (
+        <Button
+          variant={virtualOn ? "primary" : "outline"}
+          title={virtualOn
+            ? "Couper l'APC virtuel"
+            : "Utiliser l'interface comme APC (souris, tactile, clavier de l'ordinateur) tant qu'aucun APC n'est branché"}
+          onClick={() => {
+            void cmd("virtual", { enabled: !virtualOn });
+            if (!virtualOn) onVirtual();
+          }}
+        >
+          {virtualOn ? "APC virtuel : activé" : "APC virtuel"}
+        </Button>
+      )}
       {state.settings && (
-        <label className="flex items-center gap-1.5 text-[13px]">
+        <label className="hidden items-center gap-1.5 text-[13px] lg:flex">
           Mode
           <select
             value={state.settings.mode}
@@ -81,8 +132,8 @@ function TopBar({ state }: { state: ReturnType<typeof useAppState> }) {
       )}
       {state.update && <VersionButton update={state.update} />}
       <Button onClick={() => cmd("reconnect")}>Reconnecter</Button>
-      <Button onClick={() => cmd("openFolder")}>Dossier</Button>
-      <Button variant="primary" onClick={() => fileInput.current?.click()}>Ajouter un plugin…</Button>
+      {state.settings?.platform !== "android" && <Button className="hidden lg:inline-flex" onClick={() => cmd("openFolder")}>Dossier</Button>}
+      <Button variant="primary" className="hidden lg:inline-flex" onClick={() => fileInput.current?.click()}>Ajouter un plugin…</Button>
       <input
         ref={fileInput}
         type="file"

@@ -2,6 +2,7 @@ package fr.ftnl.apcdeck.core
 
 import fr.ftnl.apcdeck.api.ApcEvent
 import fr.ftnl.apcdeck.api.ApcPlugin
+import fr.ftnl.apcdeck.api.Audio
 import fr.ftnl.apcdeck.api.BindingField
 import fr.ftnl.apcdeck.api.Button
 import fr.ftnl.apcdeck.api.InputBinding
@@ -23,11 +24,17 @@ import fr.ftnl.apcdeck.api.PluginManifest
 import fr.ftnl.apcdeck.api.WebBridge
 import java.util.concurrent.Callable
 import java.security.SecureRandom
-import java.util.HexFormat
 import fr.ftnl.apcdeck.core.builtin.BUILTIN_PLUGINS
 import fr.ftnl.apcdeck.core.device.ApcDevice
 import fr.ftnl.apcdeck.core.device.DeviceMode
 import fr.ftnl.apcdeck.core.device.KnobMode
+import fr.ftnl.apcdeck.core.remote.Message
+import fr.ftnl.apcdeck.core.remote.RemoteClient
+import fr.ftnl.apcdeck.core.remote.RemoteServer
+import fr.ftnl.apcdeck.core.remote.RemoteStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -51,7 +58,12 @@ import kotlin.io.path.deleteIfExists
 import kotlin.io.path.extension
 import kotlin.io.path.name
 
-data class DeviceStatus(val connected: Boolean, val detail: String)
+/** [virtual] : l'APC virtuel de l'interface fait office d'appareil (activé, et aucun APC réel branché). */
+data class DeviceStatus(val connected: Boolean, val detail: String, val virtual: Boolean = false)
+
+/** [bytes] octets aléatoires (générateur cryptographique), en hexadécimal. */
+fun randomHex(bytes: Int): String =
+    ByteArray(bytes).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 
 data class LearnState(val pluginId: String, val fieldKey: String)
 
@@ -82,6 +94,7 @@ class PluginContextImpl(
     override val isForeground: Boolean get() = engine.foregroundId == handle.id
     override val shift: Boolean get() = engine.shift
     override val host: Host get() = engine.host
+    override val audio: Audio get() = engine.platform.audio
     override val web: WebBridge = object : WebBridge {
         override val available: Boolean get() = handle.hasWeb
         override fun emit(event: String, json: String) = engine.web.emit(handle.id, event, json)
@@ -95,7 +108,11 @@ class PluginContextImpl(
  * Cœur de l'application. Tout l'état est confiné au thread "apc-main" : les méthodes publiques
  * (appelées par l'interface) postent leur travail sur ce thread ; les plugins y sont toujours appelés.
  */
-class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> ApcPlugin>> = BUILTIN_PLUGINS) {
+class Engine(
+    home: Path,
+    val platform: Platform,
+    private val builtins: List<Pair<PluginManifest, PluginSource.Builtin>> = BUILTIN_PLUGINS,
+) {
     private val executor = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "apc-main").apply { isDaemon = true } }
     val dispatcher: CoroutineDispatcher = executor.asCoroutineDispatcher()
 
@@ -106,7 +123,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
         .getOrElse { log.error("apcdeck.json illisible, valeurs par défaut", it); Settings() }
 
     val surface = Surface()
-    private val device = ApcDevice { event -> post { dispatch(event) } }
+    private val device = ApcDevice(platform.midi) { event -> post { dispatch(event) } }
     private val handles = LinkedHashMap<String, PluginHandle>()
     private var lastConnectError: String? = null
     private var lastTick = System.nanoTime()
@@ -122,7 +139,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
 
     private val _plugins = MutableStateFlow<List<PluginView>>(emptyList())
     val plugins: StateFlow<List<PluginView>> = _plugins
-    private val _device = MutableStateFlow(DeviceStatus(false, "non connecté"))
+    private val _device = MutableStateFlow(DeviceStatus(false, "non connecté", settings.virtualApc))
     val deviceStatus: StateFlow<DeviceStatus> = _device
     private val _settings = MutableStateFlow(settings)
     val settingsState: StateFlow<Settings> = _settings
@@ -141,7 +158,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
     /** Serveur local : interface de l'application et interfaces web des plugins. */
     val web = WebServer(
         token = settings.uiToken.ifBlank {
-            HexFormat.of().formatHex(ByteArray(16).also(SecureRandom()::nextBytes)).also { token ->
+            randomHex(16).also { token ->
                 updateSettings { it.copy(uiToken = token) }
             }
         },
@@ -168,7 +185,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
 
     fun start() {
         post {
-            builtins.forEach { (manifest, factory) -> register(PluginHandle(manifest, PluginSource.Builtin(factory))) }
+            builtins.forEach { (manifest, source) -> register(PluginHandle(manifest, source)) }
             cleanCache(storage)
             listJars(storage).forEach { jar ->
                 runCatching { register(PluginHandle(readManifest(jar), PluginSource.Jar(jar))) }
@@ -183,6 +200,14 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
         executor.scheduleAtFixedRate({ guarded { tick() }; flush() }, 0, 1000L / settings.fps.coerceIn(1, 120), TimeUnit.MILLISECONDS)
         executor.scheduleWithFixedDelay({ if (!device.isOpen) guarded { connect() } }, 0, 3, TimeUnit.SECONDS)
         runCatching { watchPluginsDir() }.onFailure { log.error("surveillance du dossier plugins impossible", it) }
+        post {
+            if (settings.remoteEnabled) applyRemoteServer()
+            settings.remoteLastServer.takeIf { it.isNotBlank() }?.let { fingerprint ->
+                runCatching { remoteClient.connect(fingerprint) }.onFailure { updateSettings { s -> s.copy(remoteLastServer = "") } }
+            }
+        }
+        remoteScope.launch { surface.snapshot.collect { remoteServer.broadcast(Message.Leds(it)) } }
+        remoteScope.launch { input.collect { remoteServer.broadcast(Message.State(it)) } }
         runCatching { web.start() }
             .onSuccess { log.info("interface : ${web.uiUrl}") }
             .onFailure { log.error("serveur web impossible à démarrer", it) }
@@ -192,6 +217,8 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
     fun rescan() = post { rescanNow() }
 
     fun shutdown() {
+        runCatching { remoteServer.stop() }
+        runCatching { remoteClient.disconnect() }
         runCatching {
             executor.submit {
                 handles.values.forEach { h -> call(h) { it.onUnload() }; h.release() }
@@ -212,8 +239,17 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
         connect()
     }
 
-    /** Simule un événement (pads cliqués dans l'interface). */
+    /** Simule un événement (pads cliqués dans l'interface, APC virtuel). */
     fun simulate(event: ApcEvent) = post { dispatch(event) }
+
+    /** Active ou coupe l'APC virtuel ; un APC réel branché reste prioritaire. */
+    fun setVirtual(enabled: Boolean) = post {
+        if (settings.virtualApc == enabled) return@post
+        updateSettings { it.copy(virtualApc = enabled) }
+        setDeviceStatus(_device.value.connected, _device.value.detail)
+        if (enabled && !device.isOpen) log.info("APC virtuel activé : l'interface remplace l'appareil")
+        else if (!enabled) log.info("APC virtuel désactivé")
+    }
 
     fun install(jar: Path, deleteAfter: Boolean = false) = post {
         try {
@@ -273,8 +309,9 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
             surface.flush(device.takeIf { it.isOpen })
         } catch (t: Throwable) {
             device.close()
-            _device.value = DeviceStatus(false, "connexion perdue : ${t.message}")
+            setDeviceStatus(false, "connexion perdue : ${t.message}")
             log.warn("APC déconnecté (${t.message})")
+            if (settings.virtualApc) log.info("APC virtuel : l'interface reprend la main")
         }
     }
 
@@ -284,14 +321,19 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
             val detail = device.open(settings.mode)
             surface.invalidate()
             lastConnectError = null
-            _device.value = DeviceStatus(true, detail)
+            setDeviceStatus(true, detail)
             log.info("APC connecté : $detail")
+            if (settings.virtualApc) log.info("APC réel branché : il remplace l'APC virtuel")
         } catch (t: Throwable) {
             val message = t.message ?: t::class.simpleName ?: "erreur"
-            _device.value = DeviceStatus(false, message)
+            setDeviceStatus(false, message)
             if (message != lastConnectError) log.warn("APC indisponible : $message")
             lastConnectError = message
         }
+    }
+
+    private fun setDeviceStatus(connected: Boolean, detail: String) {
+        _device.value = DeviceStatus(connected, detail, virtual = settings.virtualApc && !connected)
     }
 
     private fun tick() {
@@ -308,6 +350,11 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
 
     private fun dispatch(event: ApcEvent) {
         _input.value = _input.value.after(event)
+        if (remoteLinked) {
+            // Ce mobile pilote un PC : tout ce qui est joué ici (APC virtuel ou branché) part vers lui.
+            remoteClient.send(event)
+            return
+        }
         if (learning != null && captureBinding(event)) return
         swallowRelease?.let { pending ->
             // Relâchement de l'entrée qui vient d'être assignée : personne ne doit le recevoir.
@@ -327,7 +374,110 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
             .forEach { h -> call(h) { it.onBackgroundEvent(event) } }
     }
 
-    fun ledsFor(id: String): Leds = if (id == foregroundId && !paused) surface else NullLeds
+    fun ledsFor(id: String): Leds = if (id == foregroundId && !paused && !remoteLinked) surface else NullLeds
+
+    /** Efface l'écran LED, sauf quand il affiche celui d'un PC piloté à distance. */
+    private fun clearSurface() {
+        if (!remoteLinked) surface.clear()
+    }
+
+    // --- contrôle à distance ---------------------------------------------------------
+
+    val remoteStore = RemoteStore(storage.home)
+    private val remoteLog = logs.logger("distance")
+    private val remoteScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Change à chaque modification de l'état du contrôle à distance (pour l'interface). */
+    private val _remoteVersion = MutableStateFlow(0)
+    val remoteVersion: StateFlow<Int> = _remoteVersion
+
+    /** Erreur au démarrage du serveur (port occupé…), null sinon. */
+    @Volatile
+    var remoteError: String? = null
+        private set
+
+    val deviceName: String get() = settings.deviceName.ifBlank { platform.deviceName }
+
+    private fun remoteChanged() = _remoteVersion.update { it + 1 }
+
+    /** Côté PC : les mobiles appairés jouent comme un APC branché. */
+    val remoteServer = RemoteServer(
+        remoteStore, { deviceName }, remoteLog,
+        onInput = { event -> post { dispatchRemote(event) } },
+        initial = { listOf(Message.Leds(surface.snapshot.value), Message.State(_input.value)) },
+        onChange = ::remoteChanged,
+    )
+
+    /** Côté mobile : sert d'APC à un PC. */
+    val remoteClient = RemoteClient(
+        remoteStore, { deviceName }, remoteLog,
+        onMessage = { message -> post { onRemoteMessage(message) } },
+        onLink = { linked -> post { setRemoteLinked(linked) } },
+    )
+
+    /** Connecté à un PC en tant qu'APC : événements envoyés au PC, LED reçues de lui. */
+    private var remoteLinked = false
+
+    fun setRemoteEnabled(enabled: Boolean) = post {
+        updateSettings { it.copy(remoteEnabled = enabled) }
+        applyRemoteServer()
+    }
+
+    fun setDeviceName(name: String) = post {
+        updateSettings { it.copy(deviceName = name.trim().take(40)) }
+        remoteChanged()
+    }
+
+    /** Retient le PC à reconnecter au prochain lancement (vide = aucun). */
+    fun rememberRemoteServer(fingerprint: String) = post {
+        updateSettings { it.copy(remoteLastServer = fingerprint) }
+    }
+
+    private fun applyRemoteServer() {
+        if (settings.remoteEnabled) {
+            try {
+                remoteServer.start(settings.remotePort)
+                remoteError = null
+            } catch (t: Throwable) {
+                remoteError = "port ${settings.remotePort} indisponible : ${t.message}"
+                log.error("contrôle à distance impossible à démarrer", t)
+            }
+        } else {
+            remoteServer.stop()
+            remoteError = null
+        }
+        remoteChanged()
+    }
+
+    /** Entrée d'un mobile : le potar est recalculé d'après sa position ici. */
+    private fun dispatchRemote(event: ApcEvent) {
+        val e = if (event is KnobEvent) {
+            event.copy(value = (_input.value.knobs.getOrElse(event.index) { 64 } + event.delta).coerceIn(0, 127))
+        } else event
+        dispatch(e)
+    }
+
+    private fun onRemoteMessage(message: Message) {
+        if (!remoteLinked) return
+        when (message) {
+            is Message.Leds -> surface.load(message.snapshot)
+            is Message.State -> _input.value = message.input
+            else -> {}
+        }
+    }
+
+    private fun setRemoteLinked(linked: Boolean) {
+        if (linked == remoteLinked) return
+        remoteLinked = linked
+        surface.clear()
+        _input.value = InputState(knobs = _input.value.knobs)
+        if (!linked) {
+            // L'écran LED revient au plugin au premier plan.
+            val h = foregroundId?.let(handles::get)
+            if (paused) drawPaused() else h?.let { call(it) { p -> p.onActivate() } }
+        }
+        remoteChanged()
+    }
 
     // --- assignation des entrées (mode écoute) -----------------------------------
 
@@ -438,7 +588,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
     private fun enable(h: PluginHandle) {
         if (h.instance != null) return
         try {
-            val plugin = h.instantiate(storage.cacheDir)
+            val plugin = h.instantiate(platform.pluginLoader, storage.cacheDir)
             h.instance = plugin
             val config = JsonPluginConfig(storage.configFile(h.id), plugin.configSpec)
             val ctx = PluginContextImpl(this, h, config, JsonDataStore(storage.pluginDataDir(h.id)), logs.logger(h.id))
@@ -479,7 +629,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
         }
         foregroundId = id
         paused = false
-        surface.clear()
+        clearSurface()
         log.debug("premier plan : $id")
         call(h) { it.onActivate() }
         publish()
@@ -489,7 +639,7 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
     private fun refreshManager() {
         handles[managerId]?.let { h -> call(h) { (it as? ManagerPlugin)?.onPluginsChanged() } }
         if (foregroundId == managerId && !paused) {
-            surface.clear()
+            clearSurface()
             handles[managerId]?.let { h -> call(h) { it.onActivate() } }
         }
     }
@@ -502,14 +652,11 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
 
     private fun togglePauseNow() {
         val h = foregroundId?.takeIf { it != managerId }?.let(handles::get) ?: return
-        surface.clear()
+        clearSurface()
         paused = !paused
         if (paused) {
             call(h) { it.onPause() }
-            for (y in 1..3) {
-                surface.pad(2, y, PadColor.WHITE, Effect.PULSE)
-                surface.pad(5, y, PadColor.WHITE, Effect.PULSE)
-            }
+            drawPaused()
         } else {
             call(h) { it.onResume() }
         }
@@ -517,6 +664,15 @@ class Engine(home: Path, private val builtins: List<Pair<PluginManifest, () -> A
         publish()
     }
 
+
+    /** Motif « pause » (deux barres blanches qui pulsent). */
+    private fun drawPaused() {
+        if (remoteLinked) return
+        for (y in 1..3) {
+            surface.pad(2, y, PadColor.WHITE, Effect.PULSE)
+            surface.pad(5, y, PadColor.WHITE, Effect.PULSE)
+        }
+    }
 
     private fun setEnabledNow(id: String, enabled: Boolean) {
         val h = handles[id] ?: return

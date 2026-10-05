@@ -6,10 +6,8 @@ import fr.ftnl.apcdeck.api.ConfigField
 import fr.ftnl.apcdeck.api.PluginManifest
 import kotlinx.coroutines.cancel
 import kotlinx.serialization.Serializable
-import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.util.zip.ZipFile
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.extension
@@ -38,6 +36,11 @@ fun readManifest(jar: Path): PluginManifest {
         val entry = zip.getEntry("plugin.json") ?: error("plugin.json absent de ${jar.name}")
         zip.getInputStream(entry).bufferedReader().readText()
     }
+    return parseManifest(text)
+}
+
+/** Contenu d'un plugin.json -> manifeste validé (plugins embarqués dans l'app Android). */
+fun parseManifest(text: String): PluginManifest {
     val m = JSON.decodeFromString<ManifestJson>(text)
     require(ID_PATTERN.matches(m.id)) { "id invalide '${m.id}' (minuscules, chiffres, - et _)" }
     require(m.apiVersion <= API_VERSION) { "${m.id} demande l'API v${m.apiVersion}, l'application fournit v$API_VERSION" }
@@ -45,26 +48,12 @@ fun readManifest(jar: Path): PluginManifest {
     return PluginManifest(m.id, m.name, m.version, m.main, m.apiVersion, m.description, m.author, m.color, m.repository, m.updateUrl)
 }
 
-/**
- * Parent des classloaders de plugins : n'expose que l'API, la stdlib Kotlin et les coroutines (plus le JDK). Les plugins ne voient pas le cœur ni l'interface, et peuvent embarquer leurs propres libs.
- */
-private class ApiOnlyClassLoader(private val app: ClassLoader) : ClassLoader("apcdeck-api", getPlatformClassLoader()) {
-    override fun loadClass(name: String, resolve: Boolean): Class<*> =
-        if (SHARED.any(name::startsWith)) app.loadClass(name) else super.loadClass(name, resolve)
-
-    override fun getResource(name: String): java.net.URL? =
-        if (SHARED.any { name.startsWith(it.replace('.', '/')) }) app.getResource(name) else super.getResource(name)
-
-    companion object {
-        val SHARED = listOf("fr.ftnl.apcdeck.api.", "kotlin.", "kotlinx.coroutines.")
-    }
-}
-
 enum class PluginStatus { ENABLED, DISABLED, ERROR }
 
 sealed interface PluginSource {
     data class Jar(val path: Path) : PluginSource
-    data class Builtin(val factory: () -> ApcPlugin) : PluginSource
+    /** Plugin compilé avec l'application ; [resources] donne ses fichiers (`web/…`), null s'il n'en a pas. */
+    data class Builtin(val factory: () -> ApcPlugin, val resources: ((String) -> ByteArray?)? = null) : PluginSource
 }
 
 /** Un plugin connu de l'application (chargé ou non). Manipulé uniquement depuis le thread principal. */
@@ -78,42 +67,38 @@ class PluginHandle(var manifest: PluginManifest, val source: PluginSource) {
     var instance: ApcPlugin? = null
     var context: PluginContextImpl? = null
     var config: JsonPluginConfig? = null
-    private var classLoader: URLClassLoader? = null
-    private var shadowCopy: Path? = null
+    private var loaded: LoadedPlugin? = null
 
     val isBuiltin: Boolean get() = source is PluginSource.Builtin
 
-    /** Fichier `web/<path>` du jar (jamais celui d'un autre jar ou de l'application). */
-    fun webResource(path: String): java.net.URL? = classLoader?.findResource("web/$path")
+    /** Fichier `web/<path>` du plugin (jamais celui d'un autre plugin ou de l'application). */
+    fun webResource(path: String): ByteArray? = when (source) {
+        is PluginSource.Builtin -> source.resources?.invoke("web/$path")
+        is PluginSource.Jar -> loaded?.resource("web/$path")
+    }
 
-    val hasWeb: Boolean get() = webResource("index.html") != null
+    /** Le plugin a une page web (web/index.html), vu au chargement. */
+    var hasWeb: Boolean = false
+        private set
 
     /** Instancie le plugin (sans appeler onLoad). */
-    fun instantiate(cacheDir: Path): ApcPlugin = when (source) {
-        is PluginSource.Builtin -> source.factory()
-        is PluginSource.Jar -> {
-            // Copie : sous Windows un jar ouvert est verrouillé, on veut pouvoir le remplacer à chaud.
-            val copy = cacheDir.resolve("$id-${System.nanoTime()}.jar")
-            Files.copy(source.path, copy, StandardCopyOption.REPLACE_EXISTING)
-            val loader = URLClassLoader("plugin-$id", arrayOf(copy.toUri().toURL()),
-                ApiOnlyClassLoader(PluginHandle::class.java.classLoader))
-            shadowCopy = copy
-            classLoader = loader
-            val cls = loader.loadClass(manifest.main)
-            require(ApcPlugin::class.java.isAssignableFrom(cls)) { "${manifest.main} n'hérite pas de ApcPlugin" }
-            cls.getDeclaredConstructor().newInstance() as ApcPlugin
+    fun instantiate(loader: PluginLoader, cacheDir: Path): ApcPlugin {
+        val plugin = when (source) {
+            is PluginSource.Builtin -> source.factory()
+            is PluginSource.Jar -> loader.load(source.path, manifest, cacheDir).also { loaded = it }.instance
         }
+        hasWeb = webResource("index.html") != null
+        return plugin
     }
 
     fun release() {
         context?.scope?.cancel()
-        runCatching { classLoader?.close() }
-        shadowCopy?.let { runCatching { it.deleteIfExists() } }
+        loaded?.let { runCatching { it.close() } }
         instance = null
         context = null
         config = null
-        classLoader = null
-        shadowCopy = null
+        loaded = null
+        hasWeb = false
     }
 }
 

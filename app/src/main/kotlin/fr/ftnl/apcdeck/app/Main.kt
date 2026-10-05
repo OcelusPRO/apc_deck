@@ -4,8 +4,9 @@ import fr.ftnl.apcdeck.core.AppBridge
 import fr.ftnl.apcdeck.core.Engine
 import fr.ftnl.apcdeck.core.UpdateState
 import fr.ftnl.apcdeck.core.UpdateStatus
-import fr.ftnl.apcdeck.core.Updater
 import fr.ftnl.apcdeck.core.readManifest
+import fr.ftnl.apcdeck.desktop.DesktopPlatform
+import fr.ftnl.apcdeck.desktop.Updater
 import java.awt.AWTException
 import java.awt.Color
 import java.awt.Desktop
@@ -40,7 +41,7 @@ import kotlin.system.exitProcess
 fun main(args: Array<String>) {
     val home = System.getProperty("apcdeck.home")?.let(::Path) ?: defaultHome()
     installBundledPlugins(home, appVersion())
-    val engine = Engine(home)
+    val engine = Engine(home, DesktopPlatform)
     engine.start()
     val quit = CountDownLatch(1)
     val updater = Updater(

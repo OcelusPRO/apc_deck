@@ -6,7 +6,8 @@
     "web/shared",
     "core/ui",
     "plugins/macros/web",
-    "plugins/synth/web"
+    "plugins/synth/web",
+    "plugins/soundboard/web"
   ],
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

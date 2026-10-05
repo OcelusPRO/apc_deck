@@ -44,6 +44,15 @@ data class Settings(
     val uiPort: Int = 47800,
     /** Jeton de l'adresse de l'interface, généré au premier lancement. */
     val uiToken: String = "",
+    /** APC virtuel (l'interface remplace l'appareil) tant qu'aucun APC réel n'est branché. */
+    val virtualApc: Boolean = false,
+    /** Contrôle à distance : des mobiles appairés peuvent servir d'APC (écoute sur le réseau local). */
+    val remoteEnabled: Boolean = false,
+    val remotePort: Int = 47810,
+    /** Nom de cet appareil montré aux autres (vide = nom de la machine). */
+    val deviceName: String = "",
+    /** PC piloté par ce mobile au dernier lancement (empreinte), reconnecté au démarrage ; vide = aucun. */
+    val remoteLastServer: String = "",
 )
 
 /**

@@ -1,6 +1,7 @@
 // API publique des plugins : seule dépendance (compileOnly) d'un plugin tiers.
 plugins {
     id("buildsrc.convention.kotlin-jvm")
+    id("buildsrc.convention.android-compatible") // aussi compilé dans l'app Android
     `java-library`
 }
 

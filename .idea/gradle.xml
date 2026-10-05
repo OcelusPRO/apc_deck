@@ -24,6 +24,7 @@
             <option value="$PROJECT_DIR$/core" />
             <option value="$PROJECT_DIR$/plugins" />
             <option value="$PROJECT_DIR$/plugins/macros" />
+            <option value="$PROJECT_DIR$/plugins/soundboard" />
             <option value="$PROJECT_DIR$/plugins/synth" />
           </set>
         </option>

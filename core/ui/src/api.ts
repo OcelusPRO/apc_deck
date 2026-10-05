@@ -95,6 +95,7 @@ const EMPTY: AppState = {
   learning: null,
   pager: null,
   update: null,
+  remote: null,
   logs: [],
 };
 
@@ -128,6 +129,7 @@ export function useAppState(): AppState {
           case "learning":
           case "pager":
           case "update":
+          case "remote":
             return { ...s, [event]: data };
           default:
             return s;
@@ -139,20 +141,4 @@ export function useAppState(): AppState {
     return () => source.close();
   }, []);
   return state;
-}
-
-/** Appui puis relâchement (comme un vrai bouton) : (true) au clic, (false) au relâchement de la souris. */
-export function pressHandlers(onPress: (down: boolean) => void) {
-  return {
-    onMouseDown: (e: { button: number; preventDefault: () => void }) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      onPress(true);
-      const up = () => {
-        onPress(false);
-        window.removeEventListener("mouseup", up);
-      };
-      window.addEventListener("mouseup", up);
-    },
-  };
 }

@@ -7,12 +7,6 @@ import fr.ftnl.apcdeck.api.Grid
 import fr.ftnl.apcdeck.api.KeyEvent
 import fr.ftnl.apcdeck.api.KnobEvent
 import fr.ftnl.apcdeck.api.PadEvent
-import javax.sound.midi.MidiDevice
-import javax.sound.midi.MidiMessage
-import javax.sound.midi.MidiSystem
-import javax.sound.midi.Receiver
-import javax.sound.midi.ShortMessage
-import javax.sound.midi.SysexMessage
 
 /** Mode envoyé par le SysEx "Introduction" ; NONE = ne pas toucher au mode courant. */
 enum class DeviceMode(val sysex: Int?) { GENERIC(0x40), ABLETON(0x41), ABLETON_ALT(0x42), NONE(null) }
@@ -21,103 +15,64 @@ enum class DeviceMode(val sysex: Int?) { GENERIC(0x40), ABLETON(0x41), ABLETON_A
 enum class KnobMode { RELATIVE, ABSOLUTE }
 
 /**
- * AKAI APC Key 25 mk2 via javax.sound.midi.
- * Ports Windows : "APC Key 25 mk2" (clavier, sustain, SysEx) et "MIDIIN2/MIDIOUT2 (APC Key 25 mk2)"
- * (pads, boutons, potars en entrée ; LED en sortie).
+ * AKAI APC Key 25 mk2 : décodage des messages reçus en événements, envoi des LED et du mode. Le transport (ports
+ * MIDI de la plateforme) est fourni par [backend].
  * [onEvent] est appelé sur un thread MIDI : à re-poster sur le thread principal.
  */
-class ApcDevice(private val onEvent: (ApcEvent) -> Unit) {
-    private val opened = mutableListOf<MidiDevice>()
-    private var mainOut: Receiver? = null
-    private var controlOut: Receiver? = null
+class ApcDevice(private val backend: MidiBackend, private val onEvent: (ApcEvent) -> Unit) {
+    @Volatile
+    private var connection: MidiConnection? = null
     private val knobValues = IntArray(KNOB_COUNT) { 64 }
 
     @Volatile
     var knobMode: KnobMode = KnobMode.RELATIVE
 
-    val isOpen: Boolean get() = controlOut != null
+    val isOpen: Boolean get() = connection != null
 
     /** Ouvre les ports ; renvoie une description lisible. Lève une exception si l'APC est introuvable. */
     fun open(mode: DeviceMode): String {
         close()
-        val devices = MidiSystem.getMidiDeviceInfo()
-            .filter { it.name.contains("APC", ignoreCase = true) }
-            .map { MidiSystem.getMidiDevice(it) }
-        val inputs = devices.filter { it.maxTransmitters != 0 }
-        val outputs = devices.filter { it.maxReceivers != 0 }
-        val (inMain, inControl) = split(inputs, "MIDIIN2")
-        val (outMain, outControl) = split(outputs, "MIDIOUT2")
-        requireNotNull(inMain ?: inControl) { "APC Key 25 mk2 introuvable (branché ? utilisé par un autre programme ?)" }
-        requireNotNull(outMain ?: outControl) { "port de sortie de l'APC introuvable" }
-
+        val opened = backend.open { message, control -> decode(message, control)?.let(onEvent) }
         try {
-            inMain?.let { listen(it, control = false) }
-            inControl?.let { listen(it, control = true) }
-            mainOut = outMain?.let(::receiverOf)
-            controlOut = outControl?.let(::receiverOf) ?: mainOut
+            connection = opened
             mode.sysex?.let { sendModeSysex(it) }
         } catch (t: Throwable) {
             close()
             throw t
         }
-        return "entrée ${inMain?.deviceInfo?.name} / ${inControl?.deviceInfo?.name}, " +
-            "sortie ${outMain?.deviceInfo?.name} / ${outControl?.deviceInfo?.name}, mode $mode"
+        return "${opened.description}, mode $mode"
     }
 
     fun close() {
-        opened.forEach { runCatching { it.close() } }
-        opened.clear()
-        mainOut = null
-        controlOut = null
-    }
-
-    private fun split(devices: List<MidiDevice>, controlTag: String): Pair<MidiDevice?, MidiDevice?> {
-        val control = devices.firstOrNull { controlTag in it.deviceInfo.name }
-        val main = devices.firstOrNull { it !== control }
-        return if (control == null && devices.size > 1) devices[0] to devices[1] else main to control
-    }
-
-    private fun listen(device: MidiDevice, control: Boolean) {
-        device.open()
-        opened += device
-        device.transmitter.receiver = object : Receiver {
-            override fun send(message: MidiMessage, timeStamp: Long) {
-                decode(message, control)?.let(onEvent)
-            }
-
-            override fun close() {}
-        }
-    }
-
-    private fun receiverOf(device: MidiDevice): Receiver {
-        device.open()
-        opened += device
-        return device.receiver
+        connection?.let { runCatching { it.close() } }
+        connection = null
     }
 
     private fun sendModeSysex(mode: Int) {
-        val bytes = bytes(0xF0, 0x47, 0x7F, DEVICE_ID, 0x60, 0x00, 0x04, mode, 1, 1, 1, 0xF7)
-        (mainOut ?: controlOut)?.send(SysexMessage(bytes, bytes.size), -1)
+        connection?.send(bytes(0xF0, 0x47, 0x7F, DEVICE_ID, 0x60, 0x00, 0x04, mode, 1, 1, 1, 0xF7), control = false)
         Thread.sleep(300)
     }
 
     // --- entrées -------------------------------------------------------------
 
-    private fun decode(message: MidiMessage, control: Boolean): ApcEvent? {
-        if (message !is ShortMessage) return null
-        return when (message.command) {
-            ShortMessage.NOTE_ON, ShortMessage.NOTE_OFF -> {
-                val pressed = message.command == ShortMessage.NOTE_ON && message.data2 > 0
-                val note = message.data1
+    /** Message brut (statut, données 1, données 2) -> événement ; null pour ce qui ne concerne pas l'APC. */
+    internal fun decode(message: ByteArray, control: Boolean): ApcEvent? {
+        if (message.size < 3) return null
+        val command = message[0].toInt() and 0xF0
+        val data1 = message[1].toInt() and 0x7F
+        val data2 = message[2].toInt() and 0x7F
+        return when (command) {
+            NOTE_ON, NOTE_OFF -> {
+                val pressed = command == NOTE_ON && data2 > 0
                 when {
-                    !control -> KeyEvent(note, pressed, message.data2)
-                    note < Grid.PADS -> PadEvent(note % Grid.COLS, Grid.ROWS - 1 - note / Grid.COLS, pressed, message.data2)
-                    else -> BUTTON_BY_NOTE[note]?.let { ButtonEvent(it, pressed) }
+                    !control -> KeyEvent(data1, pressed, data2)
+                    data1 < Grid.PADS -> PadEvent(data1 % Grid.COLS, Grid.ROWS - 1 - data1 / Grid.COLS, pressed, data2)
+                    else -> BUTTON_BY_NOTE[data1]?.let { ButtonEvent(it, pressed) }
                 }
             }
-            ShortMessage.CONTROL_CHANGE -> when (val cc = message.data1) {
-                SUSTAIN_CC -> ButtonEvent(Button.SUSTAIN, message.data2 >= 64)
-                in KNOB_CC_BASE until KNOB_CC_BASE + KNOB_COUNT -> knob(cc - KNOB_CC_BASE, message.data2)
+            CONTROL_CHANGE -> when (data1) {
+                SUSTAIN_CC -> ButtonEvent(Button.SUSTAIN, data2 >= 64)
+                in KNOB_CC_BASE until KNOB_CC_BASE + KNOB_COUNT -> knob(data1 - KNOB_CC_BASE, data2)
                 else -> null
             }
             else -> null
@@ -142,15 +97,18 @@ class ApcDevice(private val onEvent: (ApcEvent) -> Unit) {
     /** Lève une exception si l'appareil a disparu. */
     fun setPad(x: Int, y: Int, color: Int, channel: Int) {
         val note = (Grid.ROWS - 1 - y) * Grid.COLS + x
-        controlOut?.send(ShortMessage(ShortMessage.NOTE_ON, channel, note, color), -1)
+        connection?.send(bytes(NOTE_ON or (channel and 0x0F), note, color), control = true)
     }
 
     fun setButton(button: Button, velocity: Int) {
         val note = NOTE_BY_BUTTON[button] ?: return
-        if (button.hasLed) controlOut?.send(ShortMessage(ShortMessage.NOTE_ON, 0, note, velocity), -1)
+        if (button.hasLed) connection?.send(bytes(NOTE_ON, note, velocity), control = true)
     }
 
     private companion object {
+        const val NOTE_OFF = 0x80
+        const val NOTE_ON = 0x90
+        const val CONTROL_CHANGE = 0xB0
         const val DEVICE_ID = 0x4E
         const val KNOB_CC_BASE = 48
         const val KNOB_COUNT = 8

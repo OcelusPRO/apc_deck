@@ -19,9 +19,10 @@ version = appVersion
 val bundledPlugins: Configuration = configurations.create("bundledPlugins") { isTransitive = false }
 
 dependencies {
-    implementation(project(":core"))
+    implementation(project(":desktop"))
     bundledPlugins(project(":plugins:macros"))
     bundledPlugins(project(":plugins:synth"))
+    bundledPlugins(project(":plugins:soundboard"))
 }
 
 application {
@@ -68,7 +69,7 @@ val libDir = layout.buildDirectory.dir("install/$appName/lib")
 val iconFile = layout.projectDirectory.file("packaging/${os.icon}")
 
 /** Modules Java embarqués (calculés avec jdeps --print-module-deps). */
-val javaModules = "java.base,java.desktop,java.instrument,jdk.httpserver,jdk.unsupported"
+val javaModules = "java.base,java.desktop,java.instrument,jdk.unsupported"
 
 val copyBundledPlugins = tasks.register<Sync>("copyBundledPlugins") {
     from(bundledPlugins)

@@ -1,7 +1,8 @@
 // Plugin Synthé, construit comme un plugin tiers : seule l'API est visible (compileOnly).
-// Son : javax.sound.sampled (inclus dans Java). Jar produit : plugins/synth/build/libs/apcdeck-synth.jar
+// Son : ctx.audio (javax.sound sur PC, AudioTrack sur Android). Jar produit : plugins/synth/build/libs/apcdeck-synth.jar
 plugins {
     id("buildsrc.convention.kotlin-jvm")
+    id("buildsrc.convention.android-compatible") // aussi compilé dans l'app Android
     id("buildsrc.convention.web-ui") // interface React + Tailwind (dossier web/ ou ui/)
     id("buildsrc.convention.official-plugin") // version de l'application, publié dans ses releases
 }

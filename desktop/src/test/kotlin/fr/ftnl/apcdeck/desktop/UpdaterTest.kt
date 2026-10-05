@@ -1,4 +1,4 @@
-package fr.ftnl.apcdeck.core
+package fr.ftnl.apcdeck.desktop
 
 import kotlin.test.Test
 import kotlin.test.assertTrue

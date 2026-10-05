@@ -4,7 +4,15 @@
 # décodage audio Android (WAV et MP3 envoyés à la Soundboard).
 set -euo pipefail
 PKG=fr.ftnl.apcdeck
-fail() { echo "::error::$*"; adb logcat -d | grep -E "System.out|AndroidRuntime|FATAL" | tail -60 || true; exit 1; }
+fail() {
+  echo "::error::$*"
+  adb exec-out screencap -p > screen.png || true
+  echo "--- journal du moteur, de la WebView et plantages ---"
+  adb logcat -d | grep -E "System.out|chromium|Console|cr_|WebView|FATAL|AndroidRuntime: (FATAL|Caused|\s+at fr)" | grep -v "uiautomator" | tail -80 || true
+  echo "--- interface à l'écran (uiautomator) ---"
+  adb shell cat /sdcard/ui.xml 2>/dev/null | tr '>' '\n' | grep -oE '(class|text|content-desc)="[^"]+"' | sort | uniq -c | sort -rn | head -40 || true
+  exit 1
+}
 
 adb install -r "$1"
 adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
@@ -43,7 +51,7 @@ done
 ok=""
 for _ in $(seq 1 15); do
   adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
-  if adb shell cat /sdcard/ui.xml | grep -q "Contrôle à distance"; then ok=1; break; fi
+  if adb shell cat /sdcard/ui.xml | grep -qE "Contrôle à distance|Contr&#244;le|APC Deck"; then ok=1; break; fi
   sleep 2
 done
 [ -n "$ok" ] || fail "l'interface n'apparaît pas dans la WebView"
